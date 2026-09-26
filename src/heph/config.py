@@ -10,7 +10,15 @@ from heph import HephError
 
 DEFAULT_BASE_URL = "http://127.0.0.1:8080/v1"
 _KEYS = frozenset(
-    {"base_url", "model", "api_key_env", "max_tokens", "temperature", "evidence_tokens"}
+    {
+        "base_url",
+        "model",
+        "api_key_env",
+        "api_key_file",
+        "max_tokens",
+        "temperature",
+        "evidence_tokens",
+    }
 )
 
 
@@ -20,7 +28,7 @@ class Config:
     base_url: str
     model: str
     api_key: str
-    api_key_env: str
+    api_key_source: str
     max_tokens: int
     temperature: float
     evidence_tokens: int
@@ -66,15 +74,42 @@ def _float(data: Mapping[str, object], key: str, default: float, path: Path) -> 
     return float(value)
 
 
+def _key_file(raw: str, path: Path) -> str:
+    file = Path(raw).expanduser()
+    if not file.is_absolute():
+        raise HephError(f"api_key_file in {path} must be an absolute path (got {raw!r})")
+    try:
+        key = file.read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        raise HephError(f"Cannot read api_key_file {file}: {exc.strerror}") from exc
+    if not key:
+        raise HephError(f"api_key_file {file} is empty")
+    return key
+
+
+def _api_key(data: Mapping[str, object], path: Path) -> tuple[str, str]:
+    """The key and where it came from: HEPH_API_KEY, then api_key_env or api_key_file."""
+    env_name = _str(data, "api_key_env", "", path)
+    key_file = _str(data, "api_key_file", "", path)
+    if env_name and key_file:
+        raise HephError(f"Set api_key_env or api_key_file in {path}, not both")
+    from_env = os.environ.get("HEPH_API_KEY", "")
+    if from_env:
+        return from_env, "HEPH_API_KEY"
+    if env_name:
+        key = os.environ.get(env_name, "")
+        if not key:
+            raise HephError(f"api_key_env in {path} names {env_name}, which is not set")
+        return key, env_name
+    if key_file:
+        return _key_file(key_file, path), key_file
+    return "", ""
+
+
 def load() -> Config:
     path = config_path()
     data = _read(path)
-    api_key_env = _str(data, "api_key_env", "", path)
-    api_key = os.environ.get("HEPH_API_KEY", "")
-    if not api_key and api_key_env:
-        api_key = os.environ.get(api_key_env, "")
-        if not api_key:
-            raise HephError(f"api_key_env in {path} names {api_key_env}, which is not set")
+    api_key, api_key_source = _api_key(data, path)
     base_url = os.environ.get("HEPH_BASE_URL") or _str(data, "base_url", DEFAULT_BASE_URL, path)
     if not base_url.startswith(("http://", "https://")):
         raise HephError(f"base_url must start with http:// or https:// (got {base_url!r})")
@@ -83,8 +118,8 @@ def load() -> Config:
         base_url=base_url.rstrip("/"),
         model=os.environ.get("HEPH_MODEL") or _str(data, "model", "", path),
         api_key=api_key,
-        api_key_env=api_key_env,
-        max_tokens=_int(data, "max_tokens", 2048, path),
+        api_key_source=api_key_source,
+        max_tokens=_int(data, "max_tokens", 8192, path),
         temperature=_float(data, "temperature", 0.2, path),
         evidence_tokens=_int(data, "evidence_tokens", 3000, path),
     )

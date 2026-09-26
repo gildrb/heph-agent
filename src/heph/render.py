@@ -128,12 +128,14 @@ class Renderer:
             if c.status in _NOTE:
                 line.append(f" ({_NOTE[c.status]})", style=_STYLE[c.status])
             self.console.print(line)
+        if result.truncated:
+            self.console.print(Text("Answer cut off at max_tokens.", style="yellow"))
         stats = [result.model]
         if result.usage is not None:
             tokens = result.usage.completion_tokens
             stats.append(f"{tokens} tok")
-            if result.generation_seconds > 0:
-                stats.append(f"{tokens / result.generation_seconds:.1f} tok/s")
+            # end to end, including prefill: some servers buffer the whole stream
+            stats.append(f"{tokens / result.seconds:.1f} tok/s")
         stats.append(f"{result.seconds:.1f} s")
         self.console.print(Text(" · ".join(stats), style="dim"))
 

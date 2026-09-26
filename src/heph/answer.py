@@ -6,10 +6,10 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Literal, Protocol
 
-from heph import core
+from heph import HephError, core
 from heph.config import Config
 from heph.index import Index
-from heph.llm import Client, Message, Usage
+from heph.llm import Client, Finish, Message, Usage
 
 type Status = Literal["verified", "failed", "unquoted", "badid"]
 _STATUS: dict[core.Verdict, Status] = {
@@ -65,7 +65,7 @@ class Result:
     citations: tuple[Citation, ...]
     usage: Usage | None
     seconds: float
-    generation_seconds: float
+    truncated: bool
 
     def json(self) -> dict[str, object]:
         return {
@@ -84,6 +84,7 @@ class Result:
                 {"id": f"E{e.eid}", "source": e.source, "page": e.page, "text": e.text}
                 for e in self.evidence
             ],
+            "truncated": self.truncated,
             "usage": None
             if self.usage is None
             else {
@@ -212,7 +213,7 @@ def ask(
     blocks = _Blocks()
     citations: list[Citation] = []
     usage: Usage | None = None
-    first: float | None = None
+    finish: str | None = None
 
     def emit(spans: list[tuple[int, int]]) -> None:
         for start, end in spans:
@@ -225,13 +226,21 @@ def ask(
         if isinstance(item, Usage):
             usage = item
             continue
-        first = first or time.monotonic()
+        if isinstance(item, Finish):
+            finish = item.reason
+            continue
         if item.reasoning:
             events.reasoning(item.text)
         else:
             emit(blocks.feed(item.text))
     emit(blocks.flush())
-    finished = time.monotonic()
+    if not blocks.text.strip():
+        if finish == "length":
+            raise HephError(
+                f"The model used all {config.max_tokens} max_tokens before answering "
+                f"(reasoning models think first). Raise max_tokens in {config.path}."
+            )
+        raise HephError(f"The model returned an empty answer (finish reason: {finish}).")
     return Result(
         question=question,
         answer=blocks.text,
@@ -239,6 +248,6 @@ def ask(
         evidence=evidence,
         citations=tuple(citations),
         usage=usage,
-        seconds=finished - started,
-        generation_seconds=finished - (first or finished),
+        seconds=time.monotonic() - started,
+        truncated=finish == "length",
     )

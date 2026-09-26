@@ -19,9 +19,10 @@ lists none, load a model in the server or set `model` / `HEPH_MODEL`.
 
 ## 401 or 403 from the server
 
-The provider needs a key. Set `HEPH_API_KEY`, or set `api_key_env` in `config.toml` to the
-name of the variable that holds it. Heph stops with an error when `api_key_env` names an
-unset variable.
+The provider needs a key. Set `HEPH_API_KEY`, or in `config.toml` set `api_key_env` to the
+name of the variable that holds it, or `api_key_file` to a file that holds it. Heph stops
+with an error when `api_key_env` names an unset variable or `api_key_file` is unreadable
+or empty.
 
 ## A file is not indexed
 

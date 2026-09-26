@@ -196,8 +196,7 @@ def _run(args: Args, out: Renderer, err: Renderer) -> None:
             for key, value in (
                 ("base_url", config.base_url),
                 ("model", config.model or "(first model from GET /models)"),
-                ("api_key_env", config.api_key_env or "(none)"),
-                ("api key", "set" if config.api_key else "not set"),
+                ("api key", f"from {config.api_key_source}" if config.api_key else "not set"),
                 ("max_tokens", config.max_tokens),
                 ("temperature", config.temperature),
                 ("evidence_tokens", config.evidence_tokens),

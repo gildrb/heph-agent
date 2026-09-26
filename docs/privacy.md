@@ -12,9 +12,9 @@ Heph runs on your machine and keeps everything local by default.
   question. If `base_url` points at a hosted provider, that provider receives this text
   under its own terms.
 - **No telemetry.** No analytics, crash reports, update checks or install identifiers.
-- **Keys.** Heph needs no key for local servers. For hosted providers it reads the key
-  from the environment (`HEPH_API_KEY` or the variable named by `api_key_env`) and never
-  writes it to disk.
+- **Keys.** Heph needs no key for local servers. It reads a key from the environment
+  (`HEPH_API_KEY` or the variable named by `api_key_env`) or from the file named by
+  `api_key_file`, and never writes it anywhere.
 
 Delete an armory's `.harness/chats/` to remove its chat history, or `.harness/` to remove
 all Heph state for that armory.

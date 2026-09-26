@@ -29,6 +29,13 @@ class Delta:
     reasoning: bool
 
 
+@dataclass(frozen=True, slots=True)
+class Finish:
+    """Why the model stopped: "stop", "length" (hit max_tokens), or a server-specific reason."""
+
+    reason: str
+
+
 type Message = dict[str, str]
 
 
@@ -81,7 +88,7 @@ class Client:
             snippet = " ".join(response.read(800).decode(errors="replace").split())
             hint = ""
             if response.status in {401, 403}:
-                hint = f" Set api_key_env in {self.config_path} or HEPH_API_KEY."
+                hint = f" Set api_key_env or api_key_file in {self.config_path}, or HEPH_API_KEY."
             raise HephError(f"{method} {url} returned HTTP {response.status}: {snippet}{hint}")
         return response
 
@@ -97,8 +104,8 @@ class Client:
 
     def stream(
         self, model: str, messages: list[Message], max_tokens: int, temperature: float
-    ) -> Iterator[Delta | Usage]:
-        """Yields reasoning/content deltas, then usage if the server reports it."""
+    ) -> Iterator[Delta | Usage | Finish]:
+        """Yields reasoning/content deltas, the finish reason, and usage when reported."""
         body = {
             "model": model,
             "messages": messages,
@@ -116,7 +123,7 @@ class Client:
                 raise HephError(f"Malformed stream event from {self.base_url}: {exc}") from exc
 
 
-def _events(response: http.client.HTTPResponse) -> Iterator[Delta | Usage]:
+def _events(response: http.client.HTTPResponse) -> Iterator[Delta | Usage | Finish]:
     for raw in iter(response.readline, b""):
         line = raw.decode().strip()
         if not line.startswith("data:"):
@@ -138,6 +145,9 @@ def _events(response: http.client.HTTPResponse) -> Iterator[Delta | Usage]:
         text = _at(delta, "content")
         if isinstance(text, str) and text:
             yield Delta(text, reasoning=False)
+        reason = _at(event, "choices", 0, "finish_reason")
+        if isinstance(reason, str) and reason:
+            yield Finish(reason)
         prompt = _at(event, "usage", "prompt_tokens")
         completion = _at(event, "usage", "completion_tokens")
         if isinstance(prompt, int) and isinstance(completion, int):
