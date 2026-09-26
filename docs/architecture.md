@@ -1,328 +1,146 @@
 # Architecture
 
-Heph uses five workspace packages with strict import boundaries.
+Heph is a small Python CLI around a law-checked core written in
+[Bend 2](https://bend-lang.com). Python does I/O: files, extraction, the index, the model
+server and the terminal. The core does the three computations that decide what a user can
+trust — chunking, ranking and citation checking — and each has laws proven by the Bend
+checker.
 
 ```text
-packages/
-  heph/        The agent brain and user-facing command surface
-  harness/    Harness implementation namespace
-  ai/          Provider and model runtime
-  interfaces/  Terminal/TUI adapters and theme tokens
-  extensions/  Stable extension contracts
+materials ─ extract ─ core: chunk ─ tokenize ─ index cache (.harness/index/)
+question ─ tokenize ─ postings ─ core: rank ─ evidence E1..En ─ prompt ─ model (SSE)
+answer ─ parse citations ─ core: verify ─ rendered answer + sources + stats
 ```
 
-Each package has its own README for package-specific details. The root
-`packages/README.md` stays intentionally short: it is a map of ownership and
-dependency flow, not another architecture narrative.
+## Python (`src/heph/`)
 
-## Package Ownership
+| Module | Role |
+| --- | --- |
+| `cli.py` | argparse entry point, interactive session, slash commands |
+| `config.py` | `config.toml` and `HEPH_*` environment overrides |
+| `armory.py` | armory layout, init/resolve, material discovery, ignore rules, safe reads |
+| `extract.py` | text from PDF (per page), DOCX, PPTX, XLSX, ODT, ODS and UTF-8 text |
+| `core.py` | `heph-core` subprocess client (protocol v1 below) |
+| `index.py` | per-file index caches, tokenizer, postings, retrieval |
+| `llm.py` | stdlib HTTP client: streaming chat completions, `GET /models` |
+| `answer.py` | one turn: retrieve, prompt, stream, verify citations |
+| `render.py` | inline terminal output (rich): citations, sources footer, stats |
+| `session.py` | chat persistence in `.harness/chats/` |
 
-- **Heph** owns the `heph` command, agent identity, research/talking
-  orchestration, slash-command coordination, SDK surface, and composition of the
-  lower packages. Lower packages must not import Heph.
-- **The harness** lives in the `harness.*` implementation namespace. It owns
-  turns, guardrails, grounding, citations, retrieval, armory state, memory,
-  local recall attempts and policies, document workflows, diagnostics, and
-  session persistence. It must not import Heph or interface adapters.
-- **AI** owns provider configuration, auth, model catalogs, runtime streaming,
-  retry, usage, prompt-cache request shaping, logging, diagnostics, and narrow
-  payload type helpers. It lives under the `ai.*` Python namespace.
-- **Interfaces** owns terminal/TUI presentation, input, source opening,
-  transcript rendering, key handling, and `palette` theme tokens.
-- **Extensions** owns small stable contracts for extension-oriented behavior.
-  Concrete behavior belongs in the package that owns the runtime decision.
+Runtime dependencies: `pypdfium2`, `defusedxml`, `rich`, `certifi`, all pinned exactly.
 
-Heph and the harness are both protected, but in different ways: lower packages
-cannot import Heph; adapters and app code compose the harness without owning its
-correctness logic.
+The tokenizer stays in Python because it is Unicode-aware: NFKC normalization and
+case-folding, `\w+` runs, dropping one-character non-digit tokens and a short stop list.
+Python sends the core postings, not text, for ranking.
 
-## Protected Core
+## Core (`core/`)
 
-The core should be hard to change accidentally and easy to extend deliberately.
+| File | Role |
+| --- | --- |
+| `core.bend` | chunking, top-k selection, streaming normalization and KMP quote search |
+| `score.bend` | the fixed-point BM25 formula and score-table sizing, shared with `LAWS.bend` |
+| `main.bend` | stdin frame parser and output writer |
+| `stdin.c`, `stdout.c` | the only foreign code: copy stdin into a packed buffer, write a packed buffer to stdout |
+| `LAWS.bend` | specifications and law statements (`LAWS-REVIEW.md` compares them with the list-based originals) |
+| `PROOF.bend`, `proof/` | proofs of the laws; `bend core/PROOF.bend` must print `All terms check.` |
+| `build.sh` | runs `bend PROOF.bend`, emits `core/build/heph-core.c`, compiles `src/heph/_bin/heph-core` |
 
-- **AI is API substrate.** Treat `ai.*` like Pi's model API package: provider
-  configuration, request/response normalization, streaming, retry, usage, and
-  provider-neutral diagnostics. It should almost never change for Heph-specific
-  behavior.
-- **The harness owns correctness.** It guarantees local-document correctness
-  through armory validation, retrieval, evidence selection, citation
-  verification, guardrails, memory persistence, structural answer checks, and
-  diagnostics. It should expose stable services instead of accumulating agent
-  persona or interface behavior.
-- **Heph is the brain.** Conversational strategy, research orchestration, Heph
-  identity, and user-facing command composition belong here. The current
-  `harness/agent` and `harness/chat` modules are migration-era harness
-  surfaces; new agent-brain behavior should move toward Heph-facing modules and
-  call the harness for validation rather than weakening the harness boundary.
-- **The SDK is a UI-neutral Heph surface.** `heph.sdk` wraps the lower packages
-  for native apps, GUI shells, automation, and future RPC transports. It must
-  expose structured values and events instead of terminal output.
-- **Extensions stay outside the core.** Optional behavior should attach through
-  `extensions` contracts or adapter-level composition. Do not make extension
-  behavior depend on editing AI, harness, or Heph internals.
+Data stays packed end to end: the whole request is one `Array<U32>` (4 bytes per slot, which
+Bend 2.0.27 lowers to a contiguous buffer with O(1) reads and writes), documents, evidence
+and quotes are offset ranges into it, and scores live in an `Array<Nat>` table. No stage
+turns bytes into one-cell-per-byte lists.
 
-## Dependency Flow
+The wheel ships `heph/_bin/heph-core`, compiled from that C by `hatch_build.py` (clang,
+`-O2`, CPU only). Bend and its checker are needed only to change the core; building a
+wheel from the sdist needs only clang.
 
-```mermaid
-graph TD
-    Heph["Heph agent"] --> Interfaces["Interfaces"]
-    Heph --> Harness["Harness"]
-    Heph --> AI["AI runtime"]
-    Heph --> Extensions["Extensions"]
-    Interfaces --> Harness
-    Interfaces --> AI
-    Interfaces --> Extensions
-    Harness --> AI
-    Harness --> Extensions
-    Harness --> Materials["materials"]
-    Harness --> RAG["rag"]
-    Harness --> Documents["documents"]
-    Harness --> Attempts["attempts"]
-    Harness --> Memory["memory"]
-    Harness --> AgentLoop["agent helpers"]
-    RAG --> Materials
-    AI --> LLM["LLM providers"]
-    Harness --> FileStore["Armory files"]
+### Laws
+
+| Law | Statement |
+| --- | --- |
+| `cite_sound` | a quote judged `ok` at offset `i` equals, byte for byte, the normalized evidence at `i` |
+| `cite_badid` | the verdict is `badid` exactly when the evidence id does not exist |
+| `rank_scores` | every hit carries its chunk's BM25 score (the sum over query terms of `idf * tfn`), and that score is positive |
+| `rank_complete` | a chunk with a positive score is either returned, or `k` hits that all rank strictly before it are |
+| `rank_bounded` | ranking returns at most `k` hits |
+| `rank_ids_valid` | every returned chunk id is below the chunk count |
+| `rank_sorted` | hits are sorted by score descending, then chunk id ascending |
+| `chunk_cover` | chunks start at 0, are non-empty, advance, leave no gaps and end at the document end; an empty document has no chunks |
+| `chunk_text` | the bytes of every chunk's `[start, end)` in the packed document equal `doc[start:end]` of the document read as a list |
+
+The laws don't cover the protocol layer (`main.bend`) or the two I/O effects, and
+`cite_sound` is soundness only: a real quote could still be missed, but a quote marked
+verified is really there. `rank_scores` and `rank_complete` assume the score table fits
+(`n <= 2^d`, `d <= 31`), which `main.bend` guarantees by rejecting larger requests.
+
+### Semantics
+
+- Chunking: byte offsets, target 1200 bytes, overlap 200; cut at the last `\n\n` past
+  600 bytes, else the last ASCII whitespace past 600, else a UTF-8 boundary. A chunk never
+  splits a UTF-8 character.
+- Ranking: integer fixed-point BM25 (k1 = 6/5, b = 3/4) over the postings Python sends;
+  query terms are unique.
+- Verification: both sides are normalized (ASCII whitespace runs collapsed to one space,
+  ends stripped), then the quote is searched in the evidence.
+
+### Protocol v1
+
+Python runs `[<package>/_bin/heph-core, "--gpu", "off"]` with no shell, writes one
+request to stdin and reads the response from stdout. Exit 0 means success; malformed input
+exits 2 with a message on stderr. Numbers are ASCII decimal, header lines end with
+`\n`, and payloads are length-prefixed raw bytes. Frames of different kinds may be mixed;
+each output line carries the 0-based sequence number of its frame, counted per kind.
+To keep every integer below the runtime's 2^48 limit, an `R` frame is rejected (exit 2)
+when `n >= 2^24`, `tf >= 2^16`, `dl >= 2^14`, `terms >= 2^15` or `total >= 2^40`.
+
+Input frames:
+
+```text
+D <len>\n<bytes>                 chunk one UTF-8 document
+E <len>\n<bytes>                 add evidence; its id is the number of E frames before it
+Q <id> <len>\n<bytes>            verify a quote against evidence <id>
+R <k> <n> <total> <terms>\n      rank the top k of n chunks; total = sum of chunk token counts;
+                                 then exactly <terms> term blocks:
+T <count>\n                      one query term, df = count, then <count> postings:
+<chunk> <tf> <dl>\n              chunk id (< n), term frequency (> 0), chunk token count
 ```
 
-Reusable packages communicate through public APIs. Interface code may compose
-broadly because adapters must display many workflows, but reusable decisions
-should move down into the harness, AI, Extensions, or Heph.
+Output lines:
 
-## Core harness flow
-
-The correctness-critical chat flow follows a narrow reusable path:
-
-```mermaid
-graph LR
-    Intent["intent classification"] --> Planning["turn planning"]
-    Planning --> Evidence["evidence resolution"]
-    Evidence --> Generation["generation / repair"]
-    Generation --> Finalization["verification / finalization"]
+```text
+c <d_seq> <start> <end>          one per chunk of document d_seq, in order (end exclusive)
+v <q_seq> ok <offset>            quote found at offset in the normalized evidence
+v <q_seq> badid | empty | missing
+h <r_seq> <rank> <chunk> <score> one per hit, rank 0-based, score desc then chunk asc
 ```
 
-- `chat.intent` owns the classifier schema, prompt contract, and payload parser.
-  Intent handling must be structural and model-facing; it must not devolve into
-  phrase-table semantic dispatch such as treating every greeting or overview
-  wording as a separate code branch.
-- `chat.turn_orchestrator` composes lifecycle, armory-turn setup, execution, and
-  finalization mixins. `chat.orchestrator` keeps `TurnOrchestrator`,
-  `iter_chat_events`, and `send_user_message` as public composition surfaces.
-  Behavior-specific helpers should move into focused chat modules instead of
-  growing the orchestrator.
-- `chat.message_delivery` owns rendered one-shot sending, while
-  `chat.session_persistence` owns session save behavior. This keeps
-  `chat.session` and `chat.orchestrator` independent at runtime.
-- `chat.evidence` owns retrieval resolution and assessment. Planning may request
-  current, prior, or overview evidence, but it should not perform adapter work.
-  Low-content filtering lives in `chat.evidence_text`; overview sampling lives
-  in `chat.evidence_overview` so query retrieval, overview sampling, and
-  assessment remain separate responsibilities.
-- Generation and repair must remain grounded in `TurnEvidence`, citation
-  verification, and structural reply checks before turn finalization records the
-  result, usage, memory scheduling, and recall state changes.
+## Answers
 
-## Package layout
+1. Retrieve: unique query tokens, their postings, `rank` with `k` sized to fill
+   `evidence_tokens` (at most 12). Each hit becomes evidence `[E<n>] <source> p.<page>`
+   plus its text.
+2. Prompt: a fixed system prompt, then earlier questions and answers (without evidence),
+   then the evidence and the question. The model is told to cite as
+   `[E3: "words copied verbatim from E3"]` and to say when the evidence is insufficient.
+3. Stream: one chat completion call. Reasoning is shown only as a dim status; the answer
+   prints block by block.
+4. Verify: every `[E<n>]` and `[E<n>: "..."]` is parsed (curly quotes and `【】` are
+   accepted). Quotes go to `verify`. Each citation gets a status: `verified`, `failed`,
+   `unquoted` or `badid`. Heph never rewrites or invents citations.
 
-```
-packages/
-  ai/
-    src/ai/
-      diagnostics/  Metrics and tracing primitives
-      logging/      Structured logging, redaction, and timers
-      providers/    LLM provider registry, config, auth, model catalogs
-      runtime/      Chat config, messages, streaming, retry, usage
-      types/        Narrow payload type helpers
-    test/
-  extensions/
-    src/extensions/
-      contracts.py  Stable extension contracts
-    test/
-  heph/
-    src/heph/
-      cli/        Console entrypoint and top-level subcommands
-      commands/   Slash-command registry and command coordinators
-      sdk/        Programmatic runtime/session surface for native apps and automation
-      product/    Temporary self-knowledge bridge
-      identity/   Stable self-description and conversational identity target
-      prompts/    Prompt programs treated as code
-      state/      Declarative JSON/Markdown state contract target
-    test/
-  harness/
-    src/harness/
-      agent/       Prompt building, citation, tool registry/handlers
-      armory/      Armory data, validation, discovery, and local state helpers
-      chat/        Session lifecycle, intent contracts, evidence, turn orchestration
-      diagnostics/ Anonymous events, local diagnostics, redacted crash reports
-      attempts/    Structural answer-attempt observations and static guard policy
-      matching/    Fuzzy matching helpers for human-facing selectors
-      materials/   Material-file discovery, ignore rules, and material role classification
-      memory/      Memory extraction and storage
-      parameters/  Parameter management and settings
-      privacy/     Consent, anonymous install ID, release-time diagnostics config
-      rag/         RAG chunking, indexing, retrieval, source mapping
-      safety/      Local safety contracts
-      documents/   Prompt plans, recall controller, priority analysis
-      version/     Package version helpers
-      vocab/       Vocabulary drill, scheduler, state
-    test/
-  interfaces/
-    src/interfaces/
-      palette/   Theme and ANSI color tokens
-      terminal/  Terminal I/O, styling, prompts, history, source opening
-      tui/       Textual adapter: lifecycle, widgets, inline menus, rendering
-    test/
-```
+`heph ask --json` prints
+`{answer, citations: [{id, source, page, quote, status}], evidence: [{id, source, page, text}], usage}`.
 
-## Import rules
+## Zero remote code execution
 
-### Forbidden: reusable packages must not import adapters
-
-The following packages cannot import anything from adapter packages:
-`heph.cli`, `heph.commands`, `interfaces.tui`,
-`interfaces.terminal.history` or `interfaces.terminal.input`.
-
-- `harness.chat`
-- `harness.agent`
-- `ai.providers`
-- `harness.rag`
-- `harness.armory`
-- `harness.attempts`
-- `harness.documents`
-- `harness.memory`
-- `harness.parameters`
-- `harness.materials`
-- `ai.runtime`
-- `harness.vocab`
-- `interfaces.palette`
-- `harness.matching`
-
-### Forbidden: logging and diagnostics must not import adapters
-
-`ai.logging` and `harness.diagnostics.crashes` must not import from
-`heph.cli`, `heph.commands`, or `interfaces.tui`.
-
-### Independent: chat.session and chat.orchestrator
-
-`harness.chat.session` and `harness.chat.orchestrator` must be independent at
-runtime (no direct runtime imports between them).
-
-### Forbidden: Heph commands must not import TUI internals
-
-`heph.commands` may produce terminal-friendly command results and coordinate
-lower packages, but it must not import `interfaces.tui`. The TUI adapter may
-call the command registry; command logic must not know TUI widgets, flows, or
-keybindings.
-
-### Independent: materials
-
-`harness.materials` owns material discovery and ignore-policy parsing.
-It must not import `harness.chat`, `harness.agent`, or `harness.rag`.
-`harness.rag` may import `harness.materials`, but that dependency is one-way.
-
-### Low level: runtime
-
-`ai.runtime` owns shared LLM primitives such as `ChatConfig`,
-`Conversation`, message conversion, client construction, streaming completion,
-and retry helpers. It must not import adapters, `chat`, `agent`, `rag`, `documents`,
-`materials`, `memory`, or `armory` harness modules. Providers may be used by
-runtime, but providers must not import Heph or harness workflow packages.
-
-### Core: providers
-
-`ai.providers` owns provider configuration, model catalogs, registry
-metadata, and key resolution. It must not import adapters, `chat`, `agent`,
-`rag`, `documents`, or `materials`.
-
-### Domain: memory and documents
-
-`harness.memory` may use `ai.runtime` to extract concepts, but it must not
-import adapters, `harness.chat`, or `harness.agent`. `harness.documents` stays a
-pure controller/state layer and must not import adapters, `harness.chat`,
-`harness.agent`, or `harness.rag`.
-
-## Armory layout
-
-An armory is a normal directory with a fixed layout:
-
-```
-my-armory/
-  .harness/
-    armory.toml         # armory marker and metadata
-    system_prompt.md    # optional custom system prompt (replaces the default role prompt)
-    history             # input history for this armory (created on use)
-    memory.json         # extracted armory memory
-    rag_index.json      # persisted retrieval index
-    traces/             # per-session JSONL traces
-    usage/              # per-session usage/cost snapshots
-  materials/            # user material files, indexed for RAG
-  parameters/           # reserved armory parameters directory
-```
-
-Only `materials/` is used for retrieval. Hidden files inside that directory are
-skipped by the materials scanner. `source` in citations or chunk metadata means
-the provenance path for a retrieved chunk.
-
-## Armory memory
-
-Heph is local-first by default: extracted source concepts are written to
-`<armory>/.harness/memory.json` and injected into future prompts so the
-assistant can avoid repeating material the user already covered.
-
-Memory stays armory-scoped. `/status` includes the current armory session's
-memory count when a local memory store is attached.
-
-## Diagnostics
-
-Heph uses local diagnostics that keep debugging data inside the CLI workflow
-and armory state.
-
-```mermaid
-graph TD
-    CLI[CLI session] --> Logs[Structured logs]
-    CLI --> Traces[Armory trace files]
-    CLI --> Profiles[CPU / memory profiles]
-
-    Engine[ai.runtime.engine] --> Logs
-    Orchestrator[chat.orchestrator] --> Traces
-
-    Traces --> Armory[<armory>/.harness/traces/]
-    Profiles --> Cache[~/.cache/harness/profiles/]
-```
-
-### Structured logging
-
-- Configure with `HARNESS_LOG_LEVEL`, `HARNESS_LOG_FILE`, and `HARNESS_LOG_FORMAT`
-- Secrets are scrubbed before logs or trace files are written
-- Interactive sessions default to human-readable output; non-interactive runs default to JSON
-
-### Trace files
-
-- Each armory can keep append-only JSONL traces in `.harness/traces/`
-- Trace files capture session events, user messages, retrieval activity, retrieved
-  excerpts, material/tool metadata, and LLM timing
-- Trace files are local armory data; recognized secrets are redacted before writing,
-  but trace contents should still be treated as private when sharing an armory
-- Plain chat mode skips armory trace files unless an armory is attached
-
-### Profiling
-
-- `--profile` flag: CPU profiling via cProfile (stdlib)
-- `--profile-memory` flag: memory profiling via tracemalloc (stdlib)
-- `py-spy` available in dev dependencies for flame graphs
-- Profiles saved to `~/.cache/harness/profiles/`
-
-<!-- sync-docs:privacy-diagnostics-architecture:start -->
-## Privacy & Diagnostics
-
-Heph has no hosted diagnostics, analytics, or crash reporting. Local armory traces
-are retained in the armory and are never uploaded.
-<!-- sync-docs:privacy-diagnostics-architecture:end -->
-
-### Runbooks
-
-Operational playbooks are in [Runbooks](runbooks.md):
-- [CI Failure](runbook-ci-failure.md)
-- [Slow LLM Response](runbook-slow-llm-response.md)
-- [Deployment Rollback](runbook-deployment-rollback.md)
-- [RAG Retrieval Issues](runbook-rag-retrieval-issues.md)
+- Nothing is downloaded at install or at run time: no engines, models, binaries, plugins
+  or updates.
+- Nothing is loaded from an armory: no plugins, no prompt files. The model has no tools: no
+  shell, no file access, no web.
+- The only subprocess is the packaged `heph-core`, resolved inside the installed package
+  and run with a fixed argv, no shell, stdin and stdout only. It contains no network or
+  exec code.
+- The only network peer is the configured `base_url` (`POST /chat/completions`,
+  `GET /models`).
+- Materials are untrusted: symlinks and path escapes are refused, sizes are capped, Office
+  archives are checked for bombs and traversal, XML is parsed with `defusedxml`.

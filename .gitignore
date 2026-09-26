@@ -24,24 +24,16 @@ __pycache__/
 .venv/
 venv/
 
-# Testing and coverage
-.pytest_cache/
-.coverage
-.coverage.*
-htmlcov/
-.tox/
-
 # Tool caches
-.mypy_cache/
 .ruff_cache/
-.import_linter_cache/
 .cache/
 
 # Build outputs
-build/
+/build/
+# the Bend-emitted core C is committed (see CONTRIBUTING)
+!/core/build/
 dist/
-site/
-node_modules/
+src/heph/_bin/
 
 # IDEs
 .zed/
@@ -75,6 +67,3 @@ benchmarks/
 # Project-specific
 /*-armory/
 **/.harness/
-
-# Root-level tests are part of the official pytest suite. Put temporary test
-# scratch data under .artifacts/ or qa-results/ instead.

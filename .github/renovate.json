@@ -1,6 +1,20 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema",
   "extends": ["config:recommended"],
+  "enabledManagers": ["pep621", "github-actions", "pre-commit", "custom.regex"],
+  "pre-commit": {
+    "enabled": true
+  },
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "cibuildwheel run via uvx in the release workflow",
+      "managerFilePatterns": ["/^\\.github/workflows/release\\.yml$/"],
+      "matchStrings": ["uvx cibuildwheel==(?<currentValue>[0-9.]+)"],
+      "depNameTemplate": "cibuildwheel",
+      "datasourceTemplate": "pypi"
+    }
+  ],
   "minimumReleaseAge": "7 days",
   "labels": ["dependencies", "triage"],
   "automergeStrategy": "squash",

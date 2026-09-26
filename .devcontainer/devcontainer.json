@@ -4,7 +4,7 @@
   "features": {
     "ghcr.io/astral-sh/devcontainer-features/uv:latest": {}
   },
-  "postCreateCommand": "uv sync --group dev",
+  "postCreateCommand": "uv sync --group dev --no-install-project",
   "forwardPorts": [],
   "customizations": {
     "vscode": {
@@ -18,9 +18,6 @@
       "settings": {
         "python.defaultInterpreterPath": ".venv/bin/python",
         "ruff.lineLength": 99,
-        "python.linting.enabled": true,
-        "python.linting.ruffEnabled": true,
-        "python.formatting.provider": "none",
         "[python]": {
           "editor.defaultFormatter": "charliermarsh.ruff",
           "editor.formatOnSave": true,
@@ -36,7 +33,6 @@
           "**/CVS": true,
           "**/.DS_Store": true,
           "**/Thumbs.db": true,
-          "**/.pytest_cache": true,
           "**/.ruff_cache": true,
           "**/.venv": true,
           "**/__pycache__": true,

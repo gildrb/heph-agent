@@ -1,25 +1,100 @@
-[tool.uv]
-package = false
-
-[tool.uv.workspace]
-members = [
-    "packages/ai",
-    "packages/extensions",
-    "packages/heph",
-    "packages/harness",
-    "packages/interfaces",
+[project]
+name = "heph"
+version = "0.0.59"
+description = "Local document agent for accurate, cited answers."
+readme = "README.md"
+license = "MIT"
+authors = [
+    { name = "Gil", email = "hi@gildrb.com" },
+]
+requires-python = ">=3.13"
+keywords = ["cli", "citations", "documents", "llm", "local", "retrieval"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Utilities",
+]
+dependencies = [
+    "certifi==2026.2.25",
+    "defusedxml==0.7.1",
+    "pypdfium2==5.10.1",
+    "rich==14.3.3",
 ]
 
-[tool.uv.sources]
-heph = { workspace = true }
-heph-ai = { workspace = true }
-heph-extensions = { workspace = true }
-heph-interfaces = { workspace = true }
-harness = { workspace = true }
+[project.urls]
+Homepage = "https://github.com/gildrb/heph"
+Repository = "https://github.com/gildrb/heph"
+Issues = "https://github.com/gildrb/heph/issues"
+
+[project.scripts]
+heph = "heph.cli:main"
+
+[dependency-groups]
+dev = [
+    "ruff==0.15.8",
+    "ty==0.0.34",
+    "vulture==2.16",
+]
+
+[build-system]
+requires = ["hatchling==1.32.4"]
+build-backend = "hatchling.build"
+
+# hatch_build.py compiles core/build/heph-core.c (written by core/build.sh) into
+# src/heph/_bin/heph-core and tags the wheel for the build platform.
+[tool.hatch.build.hooks.custom]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/heph"]
+artifacts = ["/src/heph/_bin/heph-core"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "/src/heph",
+    "/core/*.bend",
+    "/core/*.c",
+    "/core/proof/*.bend",
+    "/core/LAWS-REVIEW.md",
+    "/core/build.sh",
+    "/hatch_build.py",
+]
+exclude = ["/src/heph/_bin"]
+artifacts = ["/core/build/heph-core.c"]
+
+[tool.uv]
+# Rebuild the editable install (and so the core binary) when the emitted C changes.
+cache-keys = [
+    { file = "pyproject.toml" },
+    { file = "hatch_build.py" },
+    { file = "core/build/heph-core.c" },
+]
+
+# Release wheels: one py3-none wheel per platform, built from the sdist (which ships the C).
+[tool.cibuildwheel]
+build = "cp313-*"
+skip = "*-musllinux_*"
+archs = ["native"]
+test-command = [
+    "heph --version",
+    'export HEPH_ARMORY_HOME="$(mktemp -d)" XDG_CONFIG_HOME="$(mktemp -d)"',
+    "heph init smoke",
+    'printf "Heph answers questions.\n" > "$HEPH_ARMORY_HOME/smoke/materials/note.md"',
+    "heph index smoke",
+]
+
+[tool.cibuildwheel.linux]
+# Bend's C needs clang; the manylinux image ships only gcc.
+before-all = "dnf install -y clang"
 
 [tool.ruff]
 line-length = 99
 target-version = "py313"
+src = ["src"]
 
 [tool.ruff.lint]
 select = [
@@ -63,28 +138,12 @@ select = [
     "N",    # naming conventions
 ]
 ignore = [
-    "PLR0913",  # too many arguments (fine for config/data classes)
-    "PLR2004",  # magic numbers (tests are full of them)
-    "TD002",    # missing author in TODO
-    "TD003",    # missing issue link in TODO
-    "FIX002",   # TODO in code (we use them)
-    "ERA001",   # commented-out code (too aggressive in tests)
     "TRY003",   # long exception messages (fine for user-facing errors)
     "EM101",    # exception must not use string literals
     "EM102",    # exception must not use f-strings
     "TC001",    # MOVE type-only imports into type-checking block
     "TC002",    # MOVE type-only imports into type-checking block
     "TC003",    # MOVE type-only imports into type-checking block
-    "ARG001",   # unused method argument (required by protocol/base class)
-    "ARG002",   # unused method argument (required by protocol/base class)
-    "ARG005",   # unused lambda argument
-    "PLR0911",  # too many returns
-    "PLR0912",  # too many branches
-    "PLR0915",  # too many statements
-    "PLW2901",  # overwritten loop variable
-    "TRY300",   # try body should not contain return
-    "TRY301",   # raise within try block
-    "PLC0415",  # deferred imports are controlled by scripts/check_repo_policies
 ]
 
 [tool.ruff.format]
@@ -92,248 +151,15 @@ quote-style = "double"
 indent-style = "space"
 line-ending = "lf"
 
-[tool.ruff.lint.per-file-ignores]
-"packages/ai/src/ai/providers/oauth.py" = ["N802"]  # HTTP handler method names are stdlib-defined
-"packages/ai/src/ai/providers/registry.py" = ["E501"]  # model data definitions are inherently long
-"scripts/check_repo_policies.py" = ["N802"]  # visit_* methods required by AST visitor pattern
-"vulture-whitelist.py" = ["E501", "B018", "F821"]  # bare names are intentional vulture hints
-
-[tool.ruff.lint.flake8-pytest-style]
-parametrize-names-type = "tuple"
-parametrize-values-type = "list"
-parametrize-values-row-type = "tuple"
-mark-parentheses = false
-raises-require-match-for = ["Exception", "ValueError", "TypeError", "RuntimeError", "OSError"]
-
 [tool.ty.environment]
 python-version = "3.13"
 
 [tool.ty.src]
-include = [
-    "packages/ai/src",
-    "packages/ai/test",
-    "packages/extensions/src",
-    "packages/extensions/test",
-    "packages/heph/src",
-    "packages/heph/test",
-    "packages/harness/src",
-    "packages/harness/test",
-    "packages/interfaces/src",
-    "packages/interfaces/test",
-    "tests",
-]
-exclude = [
-    "vulture-whitelist.py",
-    ".venv",
-    "packages/harness/test/test_rag_index.py",
-    "packages/harness/test/test_rag_retrieve.py",
-]
+include = ["src"]
 
 [tool.ty.rules]
 all = "error"
-unresolved-import = "ignore"
-unused-ignore-comment = "error"
-unused-type-ignore-comment = "error"
-
-[tool.pylint.similarities]
-ignore-comments = true
-ignore-docstrings = true
-ignore-imports = true
-min-similarity-lines = 8
-
-[tool.pylint.main]
-persistent = false
-ignore-paths = []
-
-[tool.pylint.reports]
-score = false
 
 [tool.vulture]
 min_confidence = 80
-paths = [
-    "packages/ai/src",
-    "packages/ai/test",
-    "packages/extensions/src",
-    "packages/extensions/test",
-    "packages/heph/src",
-    "packages/heph/test",
-    "packages/harness/src",
-    "packages/harness/test",
-    "packages/interfaces/src",
-    "packages/interfaces/test",
-    "vulture-whitelist.py",
-]
-
-[tool.bandit]
-severity = "low"
-confidence = "low"
-exclude_dirs = [
-    "packages/ai/test",
-    "packages/extensions/test",
-    "packages/heph/test",
-    "packages/harness/test",
-    "packages/interfaces/test",
-    "tests",
-]
-skips = ["B101", "B311", "B105", "B106", "B404", "B603", "B606"]
-
-[tool.importlinter]
-root_packages = ["ai", "extensions", "heph", "harness", "interfaces"]
-exclude_type_checking_imports = true
-include_external_packages = true
-
-[[tool.importlinter.contracts]]
-name = "AI must stay below Heph, the harness, extensions, and interfaces"
-type = "forbidden"
-source_modules = ["ai"]
-forbidden_modules = [
-    "extensions",
-    "heph",
-    "harness",
-    "interfaces",
-]
-
-[[tool.importlinter.contracts]]
-name = "harness concerns must not import app or interfaces"
-type = "forbidden"
-source_modules = [
-    "harness.agent",
-    "harness.armory",
-    "harness.chat",
-    "harness.diagnostics",
-    "harness.attempts",
-    "harness.matching",
-    "harness.materials",
-    "harness.memory",
-    "harness.parameters",
-    "harness.privacy",
-    "harness.rag",
-    "harness.safety",
-    "harness.documents",
-    "harness.vocab",
-]
-forbidden_modules = [
-    "heph",
-    "interfaces",
-]
-
-[[tool.importlinter.contracts]]
-name = "materials must not import adapters, chat, agent, or rag"
-type = "forbidden"
-source_modules = ["harness.materials"]
-forbidden_modules = [
-    "harness.chat",
-    "harness.agent",
-    "harness.rag",
-    "harness.documents",
-]
-
-[[tool.importlinter.contracts]]
-name = "rag must not import agent, chat, or adapters"
-type = "forbidden"
-source_modules = ["harness.rag"]
-forbidden_modules = [
-    "harness.agent",
-    "harness.chat",
-    "harness.documents",
-]
-
-[[tool.importlinter.contracts]]
-name = "memory must not import adapters, chat, or agent"
-type = "forbidden"
-source_modules = ["harness.memory"]
-forbidden_modules = ["harness.chat", "harness.agent"]
-
-[[tool.importlinter.contracts]]
-name = "documents must remain a pure controller layer"
-type = "forbidden"
-source_modules = ["harness.documents"]
-forbidden_modules = [
-    "harness.chat",
-    "harness.agent",
-    "harness.rag",
-]
-
-[[tool.importlinter.contracts]]
-name = "agent must not import chat"
-type = "forbidden"
-source_modules = ["harness.agent"]
-forbidden_modules = ["harness.chat"]
-
-[[tool.importlinter.contracts]]
-name = "harness.chat.session and chat.orchestrator are independent (no runtime imports)"
-type = "independence"
-modules = ["harness.chat.session", "harness.chat.orchestrator"]
-
-[[tool.importlinter.contracts]]
-name = "interfaces must not import Heph app composition"
-type = "forbidden"
-source_modules = ["interfaces.terminal", "interfaces.tui"]
-forbidden_modules = ["heph.cli", "heph.commands", "heph.product"]
-
-[[tool.importlinter.contracts]]
-name = "Heph commands must not import TUI adapter internals"
-type = "forbidden"
-source_modules = ["heph.commands"]
-forbidden_modules = ["interfaces.tui"]
-
-[tool.deptry]
-extend_exclude = [
-    "packages/ai/test",
-    "packages/extensions/test",
-    "packages/heph/test",
-    "packages/harness/test",
-    "packages/interfaces/test",
-    "tests",
-]
-# DEP003 on workspace packages is a false positive - each distribution imports its own
-# top-level source packages.
-# DEP003 on "certifi" - imported directly in oauth.py SSL fallback; declared as a
-# direct dependency so deptry should not flag it as merely transitive.
-# DEP001 on legacy optional document-conversion or RAG backends.
-# DEP004 on bm25s - dynamic runtime RAG backend import.
-per_rule_ignores = { DEP002 = ["py-spy", "pathspec", "rapidfuzz", "matplotlib", "pypdfium2"], DEP003 = ["certifi", "defusedxml", "yaml"], DEP001 = ["nltk", "numpy", "sentence-transformers", "sklearn"], DEP004 = ["bm25s", "pathspec", "rapidfuzz"] }
-
-[tool.pytest.ini_options]
-addopts = "--tb=short -q --durations=10 --strict-markers -n auto --dist worksteal --cov=ai --cov=extensions --cov=heph --cov=harness --cov=interfaces --cov-report=term-missing --cov-fail-under=46"
-testpaths = [
-    "packages/ai/test",
-    "packages/extensions/test",
-    "packages/heph/test",
-    "packages/harness/test",
-    "packages/interfaces/test",
-    "tests",
-]
-python_files = ["test_*.py", "*_test.py"]
-python_functions = ["test_*"]
-python_classes = ["Test*"]
-markers = [
-    "flaky(reruns=2, reruns_delay=1): mark test as flaky - rerun on failure",
-]
-
-# Current production coverage baseline is below the long-term 75% target.
-# Raise this as characterization coverage increases during architecture refactors.
-[tool.coverage.report]
-fail_under = 46
-
-[dependency-groups]
-dev = [
-    "bandit[toml]==1.9.4",
-    "deptry==0.25.1",
-    "pytest==9.0.3",
-    "pytest-cov==7.1.0",
-    "pytest-randomly==4.0.1",
-    "pytest-rerunfailures==16.1",
-    "pytest-xdist==3.8.0",
-    "pylint==4.0.5",
-    "radon==6.0.1",
-    "ruff==0.15.8",
-    "vulture==2.16",
-    "import-linter==2.11",
-    "py-spy==0.4.1",
-    "ty==0.0.34",
-    "pre-commit==4.6.0",
-]
-visualization = [
-    "matplotlib==3.10.8",
-]
+paths = ["src"]

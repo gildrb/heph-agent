@@ -14,10 +14,10 @@
 
 <!-- How did you verify the changes work? -->
 
-- [ ] Unit tests pass (`uv run pytest`)
-- [ ] Lint clean (`uv run ruff check .`)
-- [ ] Repo policy check clean (`uv run python -m scripts.check_repo_policies`)
+- [ ] Lint and format clean (`uv run ruff check`, `uv run ruff format --check`)
 - [ ] Type check clean (`uv run ty check`)
+- [ ] No dead code (`uv run vulture`)
+- [ ] Laws still prove, if `core/` changed (`bend core/PROOF.bend`)
 
 ## Context
 

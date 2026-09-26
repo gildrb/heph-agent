@@ -1,0 +1,30 @@
+name: Set up Bend
+description: >-
+  Install one pinned Bend release on Linux x64 the way the official installer
+  (https://bend-lang.com/install.sh) does, but for a fixed version and sha256.
+  Bend is a CI-only tool: it proves core/PROOF.bend and emits core/build/heph-core.c.
+
+runs:
+  using: composite
+  steps:
+    - name: Install Bend
+      shell: bash
+      env:
+        BEND_VERSION: "2.0.27"
+        BEND_SHA256: "58adc86af6605ed0c48f7d84e4c23028f78893ce4a867a20a4f004b11582687b"
+      run: |
+        set -euo pipefail
+        if [ "$RUNNER_OS" != "Linux" ] || [ "$RUNNER_ARCH" != "X64" ]; then
+          echo "setup-bend pins the linux-x64 archive only (runner: $RUNNER_OS $RUNNER_ARCH)" >&2
+          exit 1
+        fi
+        name="bend-${BEND_VERSION}-linux-x64.tar.gz"
+        curl --proto '=https' --tlsv1.2 -fsSL -o "$RUNNER_TEMP/$name" \
+          "https://github.com/bendlang/bend/releases/download/v${BEND_VERSION}/$name"
+        echo "${BEND_SHA256}  $RUNNER_TEMP/$name" | sha256sum -c -
+        tar --warning=no-unknown-keyword -xzf "$RUNNER_TEMP/$name" -C "$RUNNER_TEMP"
+        mkdir -p "$HOME/.bend/bin"
+        mv "$RUNNER_TEMP/bend/bend2" "$RUNNER_TEMP/bend/guide" "$HOME/.bend/"
+        mv "$RUNNER_TEMP/bend/bin/bend" "$HOME/.bend/bin/bend"
+        echo "$HOME/.bend/bin" >> "$GITHUB_PATH"
+        echo "BEND_NO_TELEMETRY=1" >> "$GITHUB_ENV"

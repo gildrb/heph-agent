@@ -4,50 +4,47 @@ Thanks for helping improve Heph.
 
 ## Setup
 
+You need [uv](https://docs.astral.sh/uv/) and clang 14 or newer. To change the core you
+also need [Bend](https://bend-lang.com), at the version pinned in
+`.github/actions/setup-bend/action.yml`.
+
 ```bash
-git clone https://github.com/gildrb/heph
-cd heph
-uv sync --frozen --group dev
+git clone https://github.com/gildrb/heph-agent
+cd heph-agent
+uv sync --group dev      # installs Heph editable (compiles src/heph/_bin/heph-core)
+uv run heph --version
 ```
 
-Run the app from source:
+The Bend-emitted C, `core/build/heph-core.c`, is committed, so building Heph needs only
+clang. After changing `core/*.bend`, run `core/build.sh`: it proves the laws, emits the C
+(the output is deterministic) and compiles the binary. Commit the regenerated C with the
+Bend change; CI rebuilds it and fails if it differs.
+
+## Gates
+
+CI runs these; run them before opening a pull request:
 
 ```bash
-uv run heph
-```
-
-## Checks
-
-Run the narrowest useful tests for your change, then the relevant gates:
-
-```bash
-uv run pytest -s --no-cov
-uv run ruff check .
-uv run ruff format --check .
+uv run ruff check
+uv run ruff format --check
 uv run ty check
-uv run python -m scripts.check_repo_policies
+uv run vulture
+bend core/PROOF.bend     # must print "All terms check."
 uv lock --check
-uv run python -m scripts.check_dependency_pinning
-uv run python -m scripts.check_dependency_sdist_allowlist
-uv audit --frozen
 ```
 
-When README, CLI, privacy, diagnostics, or docs-adjacent behavior changes:
-
-```bash
-uv run python -m scripts.sync_docs
-```
+`pre-commit install` runs ruff, ty, vulture and gitleaks on commit.
 
 ## Guidelines
 
-- Treat dependency changes as reviewed code changes; set `HEPH_ALLOW_LOCKFILE_CHANGE=1` only after reviewing `pyproject.toml`, `uv.lock`, and the source-only sdist allowlist.
-- Keep armories portable normal directories.
-- Keep answers grounded in user materials with verifiable citations.
-- Keep memory scoped to the armory unless the user explicitly opts into a shared service.
-- Keep providers and models swappable.
-- Prefer deleting duplication and simplifying control flow over adding new abstractions.
-- Add focused tests for behavior that could break.
-- Update user-facing docs in `docs/` when changing commands, armory behavior, retrieval, citation checks, memory, provider setup, privacy, or diagnostics. See `docs/getting-started.md` and related user guides.
-- Update developer docs from `docs/developers.md` and `docs/runbooks.md` when changing internal architecture, agent conventions, or operational procedures.
-
-Before opening a pull request, make sure generated docs are synced and the worktree has no unrelated churn.
+- Keep it small: Python in `src/heph/` stays under 45k tokens, the Bend implementation in
+  `core/` (proofs excluded) under 25k.
+- Strict typing: no `Any`, no casts, no `# type: ignore`.
+- No swallowed exceptions and no silent fallbacks; errors say what failed and how to fix it.
+- Zero remote code execution: no downloads, no plugins, no model tools, no subprocess other
+  than the packaged `heph-core`, no network peer other than `base_url`. See
+  [Architecture](docs/architecture.md).
+- A change to the core keeps every law in `core/LAWS.bend` proven; change a law only on
+  purpose and say why in the pull request.
+- Dependencies are pinned exactly; treat `pyproject.toml` and `uv.lock` changes as code.
+- Update `docs/` when behavior users see changes.

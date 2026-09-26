@@ -17,15 +17,12 @@ concurrency:
   group: release-${{ github.event.inputs.tag || github.ref_name }}
   cancel-in-progress: false
 
+env:
+  RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+
 jobs:
-  build:
+  sdist:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      id-token: write
-      attestations: write
-    env:
-      RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
     steps:
       - name: Validate release tag
         run: |
@@ -33,7 +30,6 @@ jobs:
             echo "Manual releases must be dispatched from main"
             exit 1
           fi
-
           if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "Release tag must match vMAJOR.MINOR.PATCH"
             exit 1
@@ -49,11 +45,6 @@ jobs:
       - name: Verify release tag provenance
         run: |
           git fetch --force origin main "refs/tags/${RELEASE_TAG}:refs/tags/${RELEASE_TAG}"
-          if ! git show-ref --verify --quiet "refs/tags/${RELEASE_TAG}"; then
-            echo "Release tag does not exist"
-            exit 1
-          fi
-
           TAG_COMMIT=$(git rev-list -n 1 "refs/tags/${RELEASE_TAG}")
           if ! git merge-base --is-ancestor "$TAG_COMMIT" origin/main; then
             echo "Release tag must point to a commit reachable from main"
@@ -68,222 +59,73 @@ jobs:
       - name: Set up uv
         uses: astral-sh/setup-uv@d0d8abe699bfb85fec6de9f7adb5ae17292296ff # v6
         with:
-          enable-cache: true
-          cache-dependency-glob: "uv.lock"
+          enable-cache: false
 
-      - name: Sync dev dependencies
-        run: uv sync --frozen --group dev
-
-      - name: Ruff check
-        run: uv run --no-sync ruff check .
-
-      - name: Repo policy check
-        run: uv run --no-sync python -m scripts.check_repo_policies
-
-      - name: Ruff format check
-        run: uv run --no-sync ruff format --check .
-
-      - name: Ty
-        run: uv run --no-sync ty check
-
-      - name: Bandit
-        run: uv run --no-sync bandit -r packages/ai/src packages/extensions/src packages/heph/src packages/harness/src packages/interfaces/src -c pyproject.toml
-
-      - name: Vulture
-        run: uv run --no-sync vulture packages/ai/src packages/extensions/src packages/heph/src packages/harness/src packages/interfaces/src packages/ai/test packages/extensions/test packages/heph/test packages/harness/test packages/interfaces/test vulture-whitelist.py
-
-      - name: Pylint duplicate-code
-        run: uv run --no-sync pylint --disable=all --enable=duplicate-code packages/ai/src packages/extensions/src packages/heph/src packages/harness/src packages/interfaces/src
-
-      - name: Pytest
-        run: uv run --no-sync pytest
-
-      - name: Build package
-        run: uv run --no-sync python -m scripts.build_release_artifacts --release-version "${RELEASE_TAG}"
-
-      - name: Release state check
+      - name: Verify project version matches tag
         run: |
-          uv run --no-sync python -m scripts.check_release_state \
-            --current-version-must-match-stable \
-            --require-tag \
-            --tag "${RELEASE_TAG}" \
-            --commit "$(git rev-parse HEAD)"
+          VERSION=$(uv version --short)
+          if [ "$VERSION" != "${RELEASE_TAG#v}" ]; then
+            echo "pyproject.toml version $VERSION does not match tag $RELEASE_TAG"
+            exit 1
+          fi
 
-      - name: Generate runtime SBOM
-        run: |
-          mkdir -p .artifacts/release
-          uv export --frozen --no-dev --format cyclonedx1.5 --output-file .artifacts/release/heph-runtime-sbom.cdx.json > /dev/null
-          uv export --frozen --no-dev --format pylock.toml --output-file .artifacts/release/pylock.runtime.toml > /dev/null
+      - uses: ./.github/actions/setup-bend
 
-      - name: Release stress test
-        run: uv run --no-sync python -m scripts.release_stress_test --expect-runtime-channel pypi --expect-runtime-version "${RELEASE_TAG}"
+      - name: Prove the core laws and emit the core C
+        # core/build.sh runs `bend PROOF.bend` (must print "All terms check.") first.
+        run: core/build.sh
 
-      - name: Attest build provenance
-        uses: actions/attest-build-provenance@43d14bc2b83dec42d39ecae14e916627a18bb661 # v3
-        with:
-          subject-path: |
-            dist/*
-            .artifacts/release/*
+      - name: Build sdist
+        run: uv build --sdist
 
-      - name: Upload build artifacts
+      - name: Upload sdist
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: dist
-          path: dist/*
+          name: sdist
+          path: dist/*.tar.gz
 
-      - name: Upload release assets
+  wheels:
+    needs: sdist
+    strategy:
+      fail-fast: true
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-14]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Download sdist
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: sdist
+          path: dist
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@d0d8abe699bfb85fec6de9f7adb5ae17292296ff # v6
+        with:
+          enable-cache: false
+
+      # Settings (manylinux + clang, py3-none tag, smoke test) live in [tool.cibuildwheel]
+      # of the sdist's pyproject.toml.
+      - name: Build and test wheel
+        run: uvx cibuildwheel==4.2.1 dist/heph-*.tar.gz --output-dir wheelhouse
+
+      - name: Upload wheel
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: release-assets
-          path: .artifacts/release/*
+          name: wheel-${{ matrix.os }}
+          path: wheelhouse/*.whl
 
   pypi-publish:
-    needs: build
+    needs: [sdist, wheels]
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
       id-token: write
     steps:
-      - name: Download build artifacts
+      - name: Download sdist and wheels
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: dist
           path: dist
-
-      - name: Download release assets
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: release-assets
-          path: release-assets
+          merge-multiple: true
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # release/v1
-
-  pypi-public-check:
-    needs: pypi-publish
-    runs-on: ubuntu-latest
-    env:
-      RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-        with:
-          ref: refs/tags/${{ env.RELEASE_TAG }}
-          persist-credentials: false
-
-      - name: Set up uv
-        uses: astral-sh/setup-uv@d0d8abe699bfb85fec6de9f7adb5ae17292296ff # v6
-        with:
-          enable-cache: true
-          cache-dependency-glob: "uv.lock"
-
-      - name: Sync dev dependencies
-        run: uv sync --frozen --group dev
-
-      - name: Verify public PyPI install
-        run: |
-          RELEASE_VERSION="${RELEASE_TAG#v}"
-          uv run --no-sync python -m scripts.check_public_install \
-            --version "${RELEASE_VERSION}" \
-            --expect-runtime-version "${RELEASE_TAG}"
-
-  github-release:
-    needs:
-      - build
-      - pypi-public-check
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    env:
-      GH_TOKEN: ${{ github.token }}
-      RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
-    steps:
-      - name: Validate release tag
-        run: |
-          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ] && [ "$GITHUB_REF" != "refs/heads/main" ]; then
-            echo "Manual releases must be dispatched from main"
-            exit 1
-          fi
-
-          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "Release tag must match vMAJOR.MINOR.PATCH"
-            exit 1
-          fi
-
-      - name: Checkout repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-        with:
-          ref: refs/tags/${{ env.RELEASE_TAG }}
-          fetch-depth: 0
-          persist-credentials: false
-
-      - name: Verify release tag provenance
-        run: |
-          git fetch --force origin main "refs/tags/${RELEASE_TAG}:refs/tags/${RELEASE_TAG}"
-          TAG_COMMIT=$(git rev-list -n 1 "refs/tags/${RELEASE_TAG}")
-          if ! git merge-base --is-ancestor "$TAG_COMMIT" origin/main; then
-            echo "Release tag must point to a commit reachable from main"
-            exit 1
-          fi
-
-      - name: Download build artifacts
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: dist
-          path: dist
-
-      - name: Download release assets
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: release-assets
-          path: release-assets
-
-      - name: Generate release notes
-        id: notes
-        env:
-          NOTES_PATH: /tmp/release-notes.md
-          REPO: ${{ github.repository }}
-        run: |
-          TAG="$RELEASE_TAG"
-          PREV_TAG=$(gh release list --limit 1 --json tagName --jq '.[0].tagName' 2>/dev/null || echo "")
-          if [ -n "$PREV_TAG" ] && [ "$PREV_TAG" != "$TAG" ]; then
-            RANGE="${PREV_TAG}..HEAD"
-          else
-            RANGE="HEAD~20..HEAD"
-          fi
-          {
-            echo "## What changed"
-            echo ""
-            git log "${RANGE}" --pretty=format:"- %s (%h)" --no-merges | head -50
-            echo ""
-            echo ""
-            echo "## Full diff"
-            echo ""
-            echo "https://github.com/${REPO}/compare/${PREV_TAG}...${TAG}"
-          } > "$NOTES_PATH"
-          echo "path=$NOTES_PATH" >> "$GITHUB_OUTPUT"
-
-      - name: Create GitHub Release
-        env:
-          RELEASE_NOTES_PATH: ${{ steps.notes.outputs.path }}
-        run: |
-          TAG="$RELEASE_TAG"
-          gh release create "${TAG}" \
-            dist/* \
-            release-assets/* \
-            --title "${TAG}" \
-            --notes-file "${RELEASE_NOTES_PATH}"
-
-      - name: Notify release
-        env:
-          DEPLOY_WEBHOOK_URL: ${{ secrets.DEPLOY_WEBHOOK_URL }}
-        run: |
-          if [ -z "${DEPLOY_WEBHOOK_URL}" ]; then
-            echo "No webhook URL configured, skipping notification"
-            exit 0
-          fi
-          TAG="$RELEASE_TAG"
-          curl -s -X POST \
-            -H "Content-Type: application/json" \
-            -d "{\"version\":\"${TAG}\",\"commit\":\"${GITHUB_SHA}\",\"environment\":\"pypi\",\"repository\":\"${GITHUB_REPOSITORY}\",\"ref\":\"${TAG}\",\"trigger\":\"release\"}" \
-            "${DEPLOY_WEBHOOK_URL}" || true

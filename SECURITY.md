@@ -2,7 +2,7 @@
 
 ## Supported Versions
 
-Currently only the latest version from the `main` branch is supported.
+Only the latest release is supported.
 
 ## Reporting a Vulnerability
 
@@ -20,31 +20,23 @@ Please include:
 
 I will acknowledge receipt within 48 hours and provide a timeline for addressing the issue.
 
-## Security Features
+## Security model
 
-Heph is designed with security and privacy in mind:
+- **Zero remote code execution**: Heph downloads nothing at install or run time (no
+  engines, models, binaries, plugins or updates) and loads nothing from armories.
+- **No model tools**: the model gets no shell, file, or web access; it only writes text.
+- **One subprocess**: the packaged `heph-core` binary, run by absolute path inside the
+  installed package with a fixed argv, no shell, stdin/stdout only.
+- **One network peer**: the configured `base_url`. No telemetry or update checks.
+- **Untrusted materials**: symlinks and path escapes are refused, sizes are capped, Office
+  archives are checked for zip bombs and traversal, and XML is parsed with `defusedxml`.
+- **Keys stay in the environment**: API keys are read from environment variables and never
+  written to disk.
 
-- **Local-first**: Your documents and chats stay on your machine
-- **No hosted telemetry**: Heph does not send analytics or crash reports
-- **Scoped memory**: Each armory's memory is isolated from others
-- **No default terminal access**: Model-generated commands are not exposed as a default agent tool
-- **Secret protection**: API keys are stored in OS keyring or environment variables, never in config files
+See [docs/architecture.md](docs/architecture.md) for details.
 
-## Security Best Practices for Users
+## Dependency security
 
-1. **Review armory plugins**: Only use armory plugins from sources you trust
-2. **Enable shell execution only for trusted armories**: Set
-   `HARNESS_TRUST_ARMORY_SHELL=/path/to/armory` only when you accept that the agent
-   can run argv-style commands on that machine. Shell execution is disabled by
-   default and does not provide a sandbox.
-3. **Keep dependencies updated**: Run `uv tool upgrade heph` regularly
-4. **Review provider traffic**: Use a local model or a trusted provider for sensitive prompts
-
-## Dependency Security
-
-The default dependency profile is deliberately minimal: one install, with no
-optional extras, ML runtime, or model downloads. Retrieval is lexical and
-document extraction uses native XML parsing plus bundled PDFium.
-
-Pre-commit runs `gitleaks` and Bandit. Dependency changes require reviewed
-`pyproject.toml`, `uv.lock`, and source-only sdist allowlist changes.
+Runtime dependencies are four exactly pinned packages (`pypdfium2`, `defusedxml`, `rich`,
+`certifi`), locked in `uv.lock`. Bend and clang are build-time tools only. CI and
+pre-commit run gitleaks.

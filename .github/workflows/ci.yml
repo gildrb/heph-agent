@@ -6,12 +6,6 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
-    inputs:
-      full_release_stress:
-        description: "Run the full release install/resolution stress test"
-        required: false
-        default: false
-        type: boolean
 
 permissions:
   contents: read
@@ -20,12 +14,8 @@ concurrency:
   group: ci-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
-env:
-  HEPH_PACKAGE_SOURCES: packages/ai/src packages/extensions/src packages/heph/src packages/harness/src packages/interfaces/src
-  HEPH_TEST_SOURCES: packages/ai/test packages/extensions/test packages/heph/test packages/harness/test packages/interfaces/test
-
 jobs:
-  lint:
+  gates:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
@@ -35,42 +25,21 @@ jobs:
         with:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
+      - name: Lockfile is current
+        run: uv lock --check
       - name: Sync dependencies
-        run: uv sync --frozen --group dev
-      - name: Lint, docs, and repo policy gates
-        shell: bash
-        run: |
-          status=0
-          run_check() {
-            label="$1"
-            shift
-            start=$(date +%s%N)
-            "$@"
-            rc=$?
-            end=$(date +%s%N)
-            ms=$(( (end - start) / 1000000 ))
-            echo "| lint ${label} | ${ms}ms |" >> "$GITHUB_STEP_SUMMARY"
-            if [ "$rc" -ne 0 ]; then
-              status="$rc"
-            fi
-          }
+        # The project itself needs the Bend-emitted C; the gates only need its dependencies.
+        run: uv sync --frozen --group dev --no-install-project
+      - name: Ruff check
+        run: uv run --no-sync ruff check
+      - name: Ruff format
+        run: uv run --no-sync ruff format --check
+      - name: Ty
+        run: uv run --no-sync ty check
+      - name: Vulture
+        run: uv run --no-sync vulture
 
-          run_check "ruff-check" uv run --no-sync ruff check .
-          run_check "repo-policies" uv run --no-sync python -m scripts.check_repo_policies
-          run_check "ruff-format" uv run --no-sync ruff format --check .
-          run_check "docs-sync" uv run --no-sync python -m scripts.sync_docs --check
-          for package in ai extensions heph harness interfaces; do
-            run_check "dependency-${package}" uv run --no-sync deptry "packages/${package}/src" --config "packages/${package}/pyproject.toml"
-          done
-          for hook in check-architecture-guardrails vulture pylint-duplicate-code radon-complexity check-tech-debt; do
-            run_check "pre-commit-${hook}" uv run --no-sync pre-commit run "$hook" --all-files
-          done
-          run_check "agents-md-validation" uv run --no-sync python scripts/validate_agents_md.py --strict
-          run_check "feature-flags" uv run --no-sync python scripts/check_feature_flags.py --strict
-          run_check "no-hosted-telemetry" uv run --no-sync python -m scripts.check_no_hosted_telemetry
-          exit "$status"
-
-  lean-profile:
+  core:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
@@ -80,148 +49,26 @@ jobs:
         with:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
-      - name: Sync lean dependencies
-        run: uv sync --frozen --group dev
-      - name: Check lean profile
-        run: uv run --no-sync python scripts/check_lean_profile.py
-
-  typecheck:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-        with:
-          persist-credentials: false
-      - uses: astral-sh/setup-uv@d0d8abe699bfb85fec6de9f7adb5ae17292296ff # v6
-        with:
-          enable-cache: true
-          cache-dependency-glob: "uv.lock"
-      - name: Sync dependencies
-        run: uv sync --frozen --group dev
-      - name: Type and architecture gates
-        shell: bash
+      - uses: ./.github/actions/setup-bend
+      - name: Prove the core laws and check the committed core C is current
+        # core/build.sh runs `bend PROOF.bend` (must print "All terms check.") first.
         run: |
-          status=0
-          run_check() {
-            label="$1"
-            shift
-            start=$(date +%s%N)
-            "$@"
-            rc=$?
-            end=$(date +%s%N)
-            ms=$(( (end - start) / 1000000 ))
-            echo "| typecheck ${label} | ${ms}ms |" >> "$GITHUB_STEP_SUMMARY"
-            if [ "$rc" -ne 0 ]; then
-              status="$rc"
-            fi
-          }
-
-          run_check "ty" uv run --no-sync ty check
-          run_check "import-linter" uv run --no-sync lint-imports
-          exit "$status"
-
-  security:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pull-requests: read
-    env:
-      HEPH_ALLOW_LOCKFILE_CHANGE: ${{ vars.HEPH_ALLOW_LOCKFILE_CHANGE }}
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-      - uses: astral-sh/setup-uv@d0d8abe699bfb85fec6de9f7adb5ae17292296ff # v6
-        with:
-          enable-cache: true
-          cache-dependency-glob: "uv.lock"
-      - name: Sync dependencies
-        run: uv sync --frozen --group dev
-      - name: Security and supply-chain gates
-        shell: bash
+          core/build.sh
+          git diff --exit-code -- core/build/heph-core.c
+      - name: Build sdist and wheel
+        run: uv build
+      - name: Smoke-test the wheel
         run: |
-          mkdir -p .artifacts
-          status=0
-          run_check() {
-            label="$1"
-            shift
-            start=$(date +%s%N)
-            "$@"
-            rc=$?
-            end=$(date +%s%N)
-            ms=$(( (end - start) / 1000000 ))
-            echo "| security ${label} | ${ms}ms |" >> "$GITHUB_STEP_SUMMARY"
-            if [ "$rc" -ne 0 ]; then
-              status="$rc"
-            fi
-          }
-
-          run_check "bandit" bash -c 'set -o pipefail; uv run --no-sync bandit -r $HEPH_PACKAGE_SOURCES -c pyproject.toml -f txt 2>&1 | tee .artifacts/security-findings.txt'
-          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
-            run_check "lockfile-review" uv run --no-sync python -m scripts.check_lockfile_change --git-diff "origin/${GITHUB_BASE_REF}...HEAD"
-          fi
-          run_check "lock-check" uv lock --check
-          run_check "dependency-pinning" uv run --no-sync python -m scripts.check_dependency_pinning
-          run_check "sdist-allowlist" uv run --no-sync python -m scripts.check_dependency_sdist_allowlist
-          run_check "no-build-install" bash -c 'uv sync --frozen --group dev --no-build --no-install-project --dry-run || uv run --no-sync python -m scripts.check_dependency_sdist_allowlist'
-          run_check "dependency-audit" uv run --no-sync python -m scripts.check_dependency_vulnerability_audit
-          exit "$status"
-      - name: Upload security findings
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: security-pr-findings
-          path: .artifacts/security-findings.txt
-          if-no-files-found: ignore
-
-  security-pr-comment:
-    needs: security
-    runs-on: ubuntu-latest
-    if: always() && github.event_name == 'pull_request'
-    permissions:
-      pull-requests: write
-      contents: read
-    steps:
-      - name: Download security findings
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        continue-on-error: true
-        with:
-          name: security-pr-findings
-          path: .artifacts
-      - name: Post security findings on PR
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-        run: |
-          FINDINGS=$(cat .artifacts/security-findings.txt 2>/dev/null || true)
-          MARKER="<!-- security-scan-report -->"
-          if [ -n "$FINDINGS" ]; then
-            {
-              echo "$MARKER"
-              echo "## Security Scan Findings"
-              echo ""
-              echo '```'
-              echo "$FINDINGS"
-              echo '```'
-            } > /tmp/security-comment.md
-          else
-            {
-              echo "$MARKER"
-              echo "## Security Scan: No findings"
-            } > /tmp/security-comment.md
-          fi
-
-          EXISTING=$(gh api "repos/${GH_REPO}/issues/${PR_NUMBER}/comments" \
-            --jq ".[] | select(.body | startswith(\"${MARKER}\")) | .id" 2>/dev/null | head -1)
-          if [ -n "$EXISTING" ]; then
-            gh api "repos/${GH_REPO}/issues/comments/${EXISTING}" \
-              --method PATCH \
-              --field body="$(cat /tmp/security-comment.md)" \
-              --silent
-          else
-            gh pr comment "$PR_NUMBER" --body-file /tmp/security-comment.md
-          fi
+          uv venv "$RUNNER_TEMP/smoke"
+          uv pip install --python "$RUNNER_TEMP/smoke" dist/*.whl
+          heph="$RUNNER_TEMP/smoke/bin/heph"
+          export XDG_CONFIG_HOME="$RUNNER_TEMP/config"
+          export HEPH_ARMORY_HOME="$RUNNER_TEMP/armories"
+          "$heph" --version
+          "$heph" init smoke
+          printf 'Heph answers questions from files.\n\nCitations are verified.\n' \
+            > "$HEPH_ARMORY_HOME/smoke/materials/note.md"
+          "$heph" index smoke
 
   secret-scan:
     runs-on: ubuntu-latest
@@ -237,83 +84,3 @@ jobs:
         uses: gitleaks/gitleaks-action@dcedce43c6f43de0b836d1fe38946645c9c638dc # v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  test:
-    runs-on: ubuntu-latest
-    permissions:
-      actions: read
-      contents: read
-    env:
-      FACTORY_DISABLE_KEYRING: "true"
-      HARNESS_DISABLE_LIVE_MODELS: "1"
-      CI: "true"
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-        with:
-          persist-credentials: false
-      - uses: astral-sh/setup-uv@d0d8abe699bfb85fec6de9f7adb5ae17292296ff # v6
-        with:
-          enable-cache: true
-          cache-dependency-glob: "uv.lock"
-      - name: Sync dependencies
-        run: uv sync --frozen --group dev
-      - name: Pytest
-        run: |
-          mkdir -p .artifacts
-          start=$(date +%s%N)
-          uv run --no-sync pytest --junitxml=.artifacts/pytest-junit.xml
-          end=$(date +%s%N)
-          ms=$(( (end - start) / 1000000 ))
-          echo "| test pytest | ${ms}ms |" >> "$GITHUB_STEP_SUMMARY"
-      - name: Upload test results
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: test-results
-          path: .artifacts/pytest-junit.xml
-      - name: Record build and test metrics
-        if: always()
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: uv run --no-sync python scripts/record_metrics.py --junit-xml .artifacts/pytest-junit.xml
-
-  build:
-    runs-on: ubuntu-latest
-    env:
-      FULL_RELEASE_STRESS: ${{ github.event_name == 'workflow_dispatch' && inputs.full_release_stress == true }}
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-      - uses: astral-sh/setup-uv@d0d8abe699bfb85fec6de9f7adb5ae17292296ff # v6
-        with:
-          enable-cache: true
-          cache-dependency-glob: "uv.lock"
-      - name: Sync dependencies
-        run: uv sync --frozen --group dev
-      - name: Build and release artifact gates
-        shell: bash
-        run: |
-          status=0
-          run_check() {
-            label="$1"
-            shift
-            start=$(date +%s%N)
-            "$@"
-            rc=$?
-            end=$(date +%s%N)
-            ms=$(( (end - start) / 1000000 ))
-            echo "| build ${label} | ${ms}ms |" >> "$GITHUB_STEP_SUMMARY"
-            if [ "$rc" -ne 0 ]; then
-              status="$rc"
-            fi
-          }
-
-          run_check "release-artifacts" uv run --no-sync python -m scripts.build_release_artifacts --allow-dirty-build-inputs
-          run_check "release-state" uv run --no-sync python -m scripts.check_release_state
-          run_check "release-artifact-structure" uv run --no-sync python -m scripts.check_release_artifacts
-          if [ "$FULL_RELEASE_STRESS" = "true" ]; then
-            run_check "release-stress" uv run --no-sync python -m scripts.release_stress_test
-          fi
-          exit "$status"

@@ -1,333 +1,61 @@
 # Troubleshooting
 
-Common issues and fixes when using Heph.
+Heph reports errors with the cause and the fix; this page adds context.
 
-## Installation Issues
+## No model server
 
-### Python Version Error
-
-**Problem**: `Python 3.13 or higher required`
-
-**Solution**:
-```bash
-# Check your Python version
-python --version
-
-# Install Python 3.13+ using pyenv
-pyenv install 3.13
-pyenv global 3.13
-
-# Or use conda
-conda install python=3.13
-```
-
-### UV Not Found
-
-**Problem**: `uv: command not found`
-
-**Solution**:
-```bash
-# Install uv
-curl -LsSf https://astral.sh/uv/install.sh | sh
-
-# Or with pip
-pip install uv
-```
-
-### Permission Denied
-
-**Problem**: Permission errors during install
-
-**Solution**:
-```bash
-# Use user-level install
-uv tool install heph@latest --user
-
-# Or use a virtual environment
-python -m venv .venv
-source .venv/bin/activate
-uv pip install heph
-```
-
-## Model Configuration Issues
-
-### API Key Not Working
-
-**Problem**: "Invalid API key" or authentication errors
-
-**Solutions**:
-1. Verify your API key is correct
-2. Check the key hasn't expired or been revoked
-3. Try re-authenticating with `/login`
-4. Check environment variables are set correctly
+`No model server at http://127.0.0.1:8080/v1` means nothing answered at `base_url`.
+Start one (`llama-server -m model.gguf --port 8080`) or point Heph at yours:
 
 ```bash
-# Check if environment variable is set
-echo $OPENAI_API_KEY
-
-# Test the key manually
-curl https://api.openai.com/v1/models \
-  -H "Authorization: Bearer $OPENAI_API_KEY"
+export HEPH_BASE_URL=http://127.0.0.1:11434/v1
+heph config
 ```
 
-### Model Not Available
+## No model listed
 
-**Problem**: Model doesn't show up in `/models`
+With `model` empty, Heph uses the first id from `GET {base_url}/models`. If the server
+lists none, load a model in the server or set `model` / `HEPH_MODEL`.
 
-**Solutions**:
-1. Check your plan includes access to that model
-2. Verify the model name is correct
-3. Try `/login` to refresh available models
-4. Check if the model is available in your region
+## 401 or 403 from the server
 
-### Rate Limit Errors
+The provider needs a key. Set `HEPH_API_KEY`, or set `api_key_env` in `config.toml` to the
+name of the variable that holds it. Heph stops with an error when `api_key_env` names an
+unset variable.
 
-**Problem**: "Rate limit exceeded" or "Too many requests"
+## A file is not indexed
 
-**Solutions**:
-1. Wait a few minutes and try again
-2. Upgrade your API plan if needed
-3. Use a different provider
-4. Reduce request frequency
+`heph index` lists every material it skipped and why: unsupported legacy format, binary
+file, not UTF-8, over the size limit, unreadable PDF, unsafe Office archive, or a symlink.
+Also check `.harnessignore` and hidden names (see [Armories](armories.md)).
 
-## Document and Indexing Issues
+## Scanned PDFs
 
-### Documents Not Found
+PDFs made of images have no text layer. Run OCR (for example `ocrmypdf`) and add the
+result instead.
 
-**Problem**: Heph says it can't find information in your documents
+## Citations are red or yellow
 
-**Solutions**:
-1. Check documents are in `materials/` directory
-2. Re-index the armory: `heph index`
-3. Check file formats are supported
-4. Use `/evidence` to see what was retrieved
-5. Run `heph health` to check extraction and indexing health
+- Red `failed`: the quoted words are not in that evidence passage (after whitespace
+  normalization). The model paraphrased or misquoted; treat that sentence with care.
+- Red `badid`: the answer cites an evidence id that was never given.
+- Yellow `unquoted`: the citation names a passage but quotes nothing, so it can't be checked.
 
-```bash
-# Check index health
-heph health ~/.armories/my-armory
+Smaller models misquote more often. A lower `temperature` and a model that follows
+instructions well help.
 
-# Rebuild index from scratch
-rm ~/.armories/my-armory/.harness/rag_index.json
-heph index ~/.armories/my-armory
-```
+## The answer says the evidence is insufficient
 
-### Poor OCR Quality
+Retrieval is lexical. Use the words your materials use, check `/sources` for what was
+retrieved, or raise `evidence_tokens`.
 
-**Problem**: PDFs with poor text extraction
+## Slow answers
 
-**Solutions**:
-1. Try higher quality PDFs if available
-2. Use OCR software to improve text layer
-3. Convert to text/Markdown manually
-4. Reinstall or update Heph if native document extraction is unavailable
+The stats line shows tok/s. Heph makes one call per question and keeps the prompt prefix
+stable, so enable prompt caching in your server (llama-server does by default). Lower
+`evidence_tokens` or `max_tokens` for shorter prompts and answers.
 
-### Index Out of Date
+## `heph-core` is missing or fails
 
-**Problem**: New documents aren't being found
-
-**Solution**:
-```bash
-heph index ~/.armories/my-armory
-```
-
-## Performance Issues
-
-### Slow Responses
-
-**Problem**: Heph takes a long time to respond
-
-**Solutions**:
-1. Check your internet connection
-2. Try a faster model or provider
-3. Use a model with larger context window
-4. Check provider status for outages
-
-### High Memory Usage
-
-**Problem**: Heph using too much RAM
-
-**Solutions**:
-1. Use a smaller model
-2. Clear old chat history
-3. Close other armories if you have multiple open
-4. Restart Heph after large indexing or extraction runs
-
-### Slow Indexing
-
-**Problem**: `heph index` takes a long time
-
-**Solutions**:
-1. Exclude large files with `.harness/ignore`
-2. Index in batches by organizing materials into subdirectories
-3. Check disk I/O performance
-4. Run `heph health ~/.armories/my-armory` to identify extraction problems
-
-## Chat and Memory Issues
-
-### Memory Not Working
-
-**Problem**: Heph doesn't remember previous conversations
-
-**Solutions**:
-1. Verify you're opening the expected armory
-2. Verify `.harness/memory.json` exists
-3. Ask a few questions to build up memory
-
-### Chat History Lost
-
-**Problem**: Previous chat sessions are missing
-
-**Solutions**:
-1. Check `.harness/chats/` directory exists
-2. Verify you're opening the correct armory
-3. Check if chats were accidentally deleted
-4. Restore from backup if available
-
-### Context Window Full
-
-**Problem**: "Context window exceeded" error
-
-**Solutions**:
-1. Use a model with larger context window
-2. Reduce conversation history
-3. Ask more focused questions
-4. Clear chat history and start fresh
-
-## TUI Issues
-
-### Display Problems
-
-**Problem**: TUI rendering incorrectly
-
-**Solutions**:
-1. Check your terminal supports Unicode
-2. Try a different terminal (iTerm2, VS Code terminal)
-3. Increase terminal window size
-4. Check terminal color settings
-
-### Keyboard Shortcuts Not Working
-
-**Problem**: Keyboard shortcuts don't respond
-
-**Solutions**:
-1. Run `/keymap` to confirm or edit the active shortcut list
-2. Rebind intercepted shortcuts from `/keymap`
-3. Check if your terminal or desktop is intercepting keys
-4. Use slash commands such as `/armory`, `/materials`, and `/keymap`
-
-### TUI Crashes
-
-**Problem**: TUI crashes with error
-
-**Solutions**:
-1. Check logs: `HARNESS_LOG_LEVEL=DEBUG heph`
-2. Try running with `--no-tui` flag if available
-3. Check terminal compatibility
-4. Report the issue with logs
-
-## DevContainer Issues
-
-### Build Fails
-
-**Problem**: Dev container fails to build
-
-**Solutions**:
-1. Check Docker is running
-2. Verify dev container configuration
-3. Try rebuilding the container
-4. Check for network issues
-
-### Extensions Not Installing
-
-**Problem**: VS Code extensions not available in container
-
-**Solutions**:
-1. Check `devcontainer.json` extension list
-2. Manually install extensions in container
-3. Check marketplace access from container
-4. Rebuild container
-
-## Network Issues
-
-### Connection Refused
-
-**Problem**: Can't connect to model provider
-
-**Solutions**:
-1. Check internet connection
-2. Verify API endpoint is correct
-3. Check firewall settings
-4. Try different network
-5. Check provider status page
-
-### Proxy Issues
-
-**Problem**: Can't connect through corporate proxy
-
-**Solutions**:
-```bash
-# Set proxy environment variables
-export HTTP_PROXY="http://proxy.example.com:8080"
-export HTTPS_PROXY="http://proxy.example.com:8080"
-
-# Heph uses standard proxy environment variables.
-```
-
-### SSL Certificate Errors
-
-**Problem**: SSL certificate verification fails
-
-**Solutions**:
-1. Check system time is correct
-2. Update CA certificates
-3. Check if corporate firewall is intercepting SSL
-4. For development only: disable SSL verification (not recommended)
-
-## Getting Help
-
-If none of these solutions work:
-
-1. **Check logs**: Enable debug logging
-   ```bash
-   HARNESS_LOG_LEVEL=DEBUG heph
-   ```
-
-2. **Health check**: Run diagnostics
-   ```bash
-   heph health ~/.armories/my-armory
-   ```
-
-3. **Search issues**: Check https://github.com/gildrb/heph/issues
-
-4. **Report the issue**: Create a new issue with:
-   - Heph version: `heph --version`
-   - Python version: `python --version`
-   - OS: macOS/Linux/Windows version
-   - Steps to reproduce
-   - Error messages and logs
-   - Expected vs actual behavior
-
-5. **Email**: hi@gildrb.com for security or sensitive issues
-
-## Debug Mode
-
-Enable comprehensive debugging:
-
-```bash
-# Enable debug logging
-HARNESS_LOG_LEVEL=DEBUG heph
-
-# Log to file
-HARNESS_LOG_FILE=heph.log heph
-
-# JSON format logs
-HARNESS_LOG_FORMAT=json heph
-
-# Profile performance
-heph --profile
-heph --profile-memory
-```
-
-Check generated logs at the configured `HARNESS_LOG_FILE`, local traces in
-`.harness/traces/`, and CPU profiles in `~/.cache/harness/profiles/`.
+The binary ships inside the wheel at `heph/_bin/heph-core`. Reinstall Heph. From source,
+run `core/build.sh` and `uv sync` again (see [CONTRIBUTING](../CONTRIBUTING.md)).

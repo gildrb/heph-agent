@@ -5,6 +5,4 @@ description = "Secret scanning configuration - extends default rules with projec
   description = "Global allowlist for false positives"
   paths = [
     '''\.env\.example$''',
-    '''vulture-whitelist\.py$''',
-    '''tests/.*$''',
   ]

@@ -1,246 +1,72 @@
 # Armories
 
-An armory is the local unit of work in Heph. It is a normal directory with
-materials, chat history, retrieval index, traces, usage snapshots, and local
-memory.
+An armory is a normal folder: the files Heph answers from, plus Heph's local state.
 
-## Armory Structure
-
-```
-~/.armories/my-armory/
-├── materials/           # Your materials
-│   ├── document1.pdf
-│   ├── notes.md
-│   └── chapter1.txt
-├── .harness/          # Heph state
-│   ├── armory.toml     # Armory marker and metadata
-│   ├── rag_index.json  # Retrieval index
-│   ├── memory.json     # Armory memory
-│   ├── chats/          # Chat history
-│   ├── traces/         # JSONL traces when enabled
-│   ├── usage/          # Token and cost snapshots
-│   └── ignore          # File ignore patterns
-└── README.md           # Optional description
+```text
+~/.armories/notes/
+├── materials/            # files to answer from and cite
+├── .harnessignore        # optional ignore rules
+└── .harness/
+    ├── armory.toml       # marker: this folder is an armory
+    ├── index/            # one cache file per material
+    ├── chats/            # saved chats
+    └── history           # input history of `heph notes`
 ```
 
-## Key Concepts
+`heph init <name>` creates `$HEPH_ARMORY_HOME/<name>` (default `~/.armories/<name>`);
+`heph init <path>` creates the armory at a path (anything with a `/` or starting with `.`
+or `~`). Commands take an armory name, a path, or default to the current directory.
 
-### Portability
+Copy or sync the folder to move an armory; it holds no absolute paths.
 
-Armories are just directories under `~/.armories`. To move Heph to another PC,
-install Heph, copy or sync the `.armories` folder, set up provider credentials,
-and run `heph`.
+## Materials
 
-You can:
-- Copy the whole `.armories` folder between machines
-- Back it up with any file backup tool
-- Put source documents in normal `materials/` folders you can open with other apps
-- Inspect or delete Heph state directly under `.harness/`
+Heph reads every file under `materials/` except ignored ones:
 
-### Isolation
+| Kind | Handling |
+| --- | --- |
+| PDF | text per page (PDFium); citations show the page |
+| DOCX, PPTX, XLSX, ODT, ODS | text from the document XML |
+| anything else | UTF-8 text (Markdown, notes, code, CSV...) |
 
-Each armory is completely isolated:
-- **Memory**: Armory memory is scoped to the armory
-- **Index**: Retrieval index is armory-specific
-- **Chats**: Chat history stays with the armory
-- **Traces and usage**: diagnostics traces and usage snapshots are armory-local
+Rejected with a reason: `.doc`, `.ppt`, `.xls`, `.odp`, `.rtf` (save as PDF, DOCX, PPTX or
+XLSX), binary files, text that isn't UTF-8, files over 50 MB, text files over 5 MB, and
+Office archives that are too large, have too many members or contain traversal paths.
 
-This separation prevents cross-contamination between different projects or domains.
+Materials are untrusted input. Heph never follows symlinks inside the armory, never runs or
+loads anything from it, and parses XML with `defusedxml`.
 
-### Cache and Ownership
+## Ignore rules
 
-The armory cache is local state, not a hosted account:
+`.harnessignore` at the armory root uses a subset of gitignore syntax, one pattern per
+line:
 
-- `materials/` is your user-owned material data
-- `.harness/` is rebuildable or inspectable Heph state for retrieval, memory,
-  chats, traces, usage, generated artifacts, and trusted local tools
-- `~/.cache/harness/llama.cpp/` is only for managed local model binaries, logs,
-  and GGUF model files
-
-Run `heph trust ~/.armories/my-armory` to print exact ownership and cache paths
-for an armory.
-
-### Normal Files
-
-Your documents are stored as regular files in `materials/`. You can:
-- Access them directly with any PDF viewer, text editor, etc.
-- Use them with other tools
-- Copy them without any proprietary export format
-
-## Creating Armories
-
-Named armories live in `~/.armories`:
-
-```bash
-heph armory init my-project
-# Creates: ~/.armories/my-project/
+```text
+# lines starting with # are comments
+drafts/
+*.log
+materials/notes/old/*.md
 ```
 
-New armories can be opened immediately, even before `materials/` contains files.
-Heph will keep the armory attached and show a no-materials state until you add
-documents.
+- `name/` matches directories only, at any depth.
+- A pattern without an inner `/` is a glob matched against file and directory names.
+- A pattern with an inner `/` is matched against the whole path from the armory root.
+- `!` negation and trailing comments are not supported.
 
-Heph discovers valid armory folders in `.armories` when it starts. Copied or
-synced armories are available as long as their `.harness/armory.toml` marker and
-`materials/` folder travel with them.
+`.git/`, `__pycache__/`, `.DS_Store`, hidden files and directories, and symlinks are
+always skipped.
 
-Armories created by older Heph releases with `.hephaion/` state are migrated to
-`.harness/` on first open. If both state directories exist and `.harness/` is not
-a valid armory state directory, Heph stops instead of guessing which state to use.
+## Index
 
-When Heph is open without an attached armory, entering the exact name of a
-discovered armory opens it directly. Names and relative paths resolve inside
-`~/.armories`; Heph will not open armories outside that directory from this flow.
-When Heph is already attached to an armory, entering exactly `detach` leaves the
-current armory and continues in plain chat.
+`heph index` (and every question) brings the index up to date. Each material gets one
+cache file, `.harness/index/<sha256 of the file bytes>.json`, holding its text, page
+offsets, chunks and per-chunk term counts. Unchanged files are not re-read; caches of
+removed or changed files are deleted. Deleting `.harness/index/` is always safe.
 
-## Managing Documents
+Chunks are about 1200 bytes with 200 bytes of overlap, cut at paragraph breaks where
+possible. Retrieval is BM25 over those chunks; see [Architecture](architecture.md).
 
-### Adding Documents
+## Chats
 
-Simply copy files into the `materials/` directory:
-
-```bash
-cp ~/Downloads/lecture.pdf ~/.armories/my-armory/materials/
-cp ~/notes/summary.md ~/.armories/my-armory/materials/
-```
-
-### Supported Formats
-
-- PDF
-- Markdown (.md)
-- Plain text (.txt)
-- DOCX, PPTX, and XLSX
-- Common code files
-
-### Organizing Materials
-
-Use subdirectories to organize:
-
-```
-materials/
-├── lectures/
-│   ├── week1.pdf
-│   └── week2.pdf
-├── textbook/
-│   ├── chapter1.pdf
-│   └── chapter2.pdf
-└── notes/
-    └── summary.md
-```
-
-### Ignoring Files
-
-Create `.harness/ignore` to exclude files:
-
-```
-# Ignore patterns
-*.tmp
-draft-*
-old/
-*.bak
-```
-
-## Indexing
-
-Heph indexes materials when needed. To refresh manually:
-
-```bash
-heph index ~/.armories/my-armory
-```
-
-Check index health:
-
-```bash
-heph health ~/.armories/my-armory
-```
-
-## Memory
-
-Each armory maintains its own local memory:
-
-- **Answer preferences**: Keep stable preferences for cited answers
-- **Material context**: Remember sparse facts and concepts from the armory
-- **Follow-up context**: Keep prior context scoped to the same armory
-
-Memory is stored in `.harness/memory.json` and is completely local.
-
-## Moving Armories
-
-The normal portability path is the folder itself:
-
-```bash
-cp -r ~/.armories ~/backup/armories
-```
-
-On the other machine, place the folder at `~/.armories`, set up `/login` or your
-provider environment variables, and run `heph`. Indexes are rebuildable, so a
-copied armory can still work when generated index files are missing or stale.
-
-If you intentionally share only materials, copy just one armory's
-`materials/` folder:
-
-```bash
-cp -r ~/.armories/my-armory/materials ~/backup/documents/
-```
-
-## Best Practices
-
-### One Armory per Project
-
-Keep different projects in separate armories:
-- `course-notes/` for course materials
-- `research/` for research papers
-- `documentation/` for product docs
-
-### Descriptive Names
-
-Use clear, descriptive names:
-- `research-course` instead of `rc`
-- `q3-financial-reports` instead of `reports`
-
-### Regular Maintenance
-
-- Remove outdated documents from `materials/`
-- Re-index after major changes: `heph index`
-- Check health periodically: `heph health`
-
-### Backup Strategy
-
-- Back up or sync `~/.armories` when you want every armory to travel
-- Back up `materials/` when you only need the source material files
-- Indexes can be regenerated if needed
-- Provider credentials stay machine-local and are not stored in `.armories`
-
-## Rebuilding Indexes
-
-Index files are rebuildable. If an armory was copied from another machine or the
-index looks stale, refresh it with the normal indexing path:
-
-```bash
-heph index ~/.armories/my-armory
-```
-
-## Troubleshooting
-
-### Index Out of Date
-
-If Heph isn't finding recent documents:
-
-```bash
-heph index ~/.armories/my-armory
-heph health ~/.armories/my-armory
-```
-
-### Poor Retrieval Quality
-
-1. Check document quality (OCR errors, formatting issues)
-2. Run `heph health ~/.armories/my-armory`
-3. Refresh the index with `heph index ~/.armories/my-armory`
-4. Use `/evidence` to see what's being retrieved
-
-### Memory Not Working
-
-1. Verify you're opening the expected armory
-2. Verify `.harness/memory.json` exists
-3. Try asking a few questions to build up memory
+Chats are saved in `.harness/chats/`. `/new` starts a new one. Only questions and answers
+are kept in the history sent to the model; evidence is retrieved again for each question.

@@ -6,102 +6,22 @@ repos:
         args: [--fix]
       - id: ruff-format
 
-  - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v5.0.0
-    hooks:
-      - id: check-added-large-files
-        name: check-large-files
-        args: [--maxkb=500]
-
   - repo: https://github.com/gitleaks/gitleaks
     rev: v8.24.3
     hooks:
       - id: gitleaks
 
-  - repo: https://github.com/astral-sh/ty-pre-commit
-    rev: v0.0.50
-    hooks:
-      - id: ty
-        # Keep pre-commit aligned with the repo's pinned ty version in uv.lock.
-        entry: uv check --quiet --preview-features=check-command --ty-version=0.0.34
-        args: [--isolated, --no-python-downloads]
-
   - repo: local
     hooks:
-      - id: sync-docs
-        name: sync-docs (README/docs)
+      - id: ty
+        name: ty
         language: system
-        entry: uv run python -m scripts.sync_docs
-        pass_filenames: false
-        always_run: true
-      - id: check-repo-policies
-        name: repo-policies (no Any / no deferred imports)
-        language: python
-        entry: python -m scripts.check_repo_policies
+        entry: uv run --no-sync ty check
         types: [python]
-        pass_filenames: false
-      - id: check-lockfile-change
-        name: lockfile change review gate
-        language: python
-        entry: python -m scripts.check_lockfile_change
-        files: ^uv\.lock$
-      - id: check-dependency-pinning
-        name: dependency pinning
-        language: python
-        entry: python -m scripts.check_dependency_pinning
-        files: ^pyproject\.toml$
-        pass_filenames: false
-      - id: check-sdist-allowlist
-        name: source-only sdist allowlist
-        language: python
-        entry: python -m scripts.check_dependency_sdist_allowlist
-        files: ^uv\.lock$
         pass_filenames: false
       - id: vulture
-        name: vulture (dead-code)
-        language: python
-        entry: uv run vulture packages/ai/src packages/extensions/src packages/heph/src packages/harness/src packages/interfaces/src packages/ai/test packages/extensions/test packages/heph/test packages/harness/test packages/interfaces/test vulture-whitelist.py
-        types: [python]
-        pass_filenames: false
-      - id: pylint-duplicate-code
-        name: pylint (duplicate-code)
-        language: python
-        entry: uv run pylint --persistent=no --score=no --disable=all --enable=duplicate-code packages/ai/src packages/extensions/src packages/heph/src packages/harness/src packages/interfaces/src
-        types: [python]
-        pass_filenames: false
-      - id: lint-imports
-        name: import-linter (architecture)
-        language: python
-        entry: uv run lint-imports
-        types: [python]
-        pass_filenames: false
-      - id: check-architecture-guardrails
-        name: architecture guardrails
-        language: python
-        entry: uv run python scripts/check_architecture_guardrails.py
-        types: [python]
-        pass_filenames: false
-      - id: deptry
-        name: deptry (unused-deps)
+        name: vulture
         language: system
-        entry: bash -c 'uv run deptry packages/ai/src --config packages/ai/pyproject.toml && uv run deptry packages/extensions/src --config packages/extensions/pyproject.toml && uv run deptry packages/heph/src --config packages/heph/pyproject.toml && uv run deptry packages/harness/src --config packages/harness/pyproject.toml && uv run deptry packages/interfaces/src --config packages/interfaces/pyproject.toml'
-        types: [python]
-        pass_filenames: false
-      - id: radon-complexity
-        name: radon (complexity)
-        language: python
-        entry: uv run radon cc packages/ai/src packages/extensions/src packages/heph/src packages/harness/src packages/interfaces/src -a -nc
-        types: [python]
-        pass_filenames: false
-      - id: check-tech-debt
-        name: tech-debt (TODO/FIXME issue links)
-        language: python
-        entry: python scripts/check_tech_debt.py --strict
-        types: [python]
-        pass_filenames: false
-      - id: check-no-hosted-telemetry
-        name: no hosted telemetry or install fingerprints
-        language: python
-        entry: python -m scripts.check_no_hosted_telemetry
+        entry: uv run --no-sync vulture
         types: [python]
         pass_filenames: false

@@ -4,38 +4,18 @@
 # Default owners for everything
 *       @gildrb
 
-# Core CLI and shell
-/packages/heph/src/heph/cli/                  @gildrb
-/packages/heph/src/heph/commands/             @gildrb
-/packages/interfaces/src/interfaces/terminal/ @gildrb
-/packages/interfaces/src/interfaces/tui/      @gildrb
+# Law-checked Bend core (laws, proofs, protocol)
+/core/                 @gildrb
 
-# LLM engine and chat
-/packages/harness/src/harness/chat/  @gildrb
-/packages/harness/src/harness/agent/ @gildrb
-/packages/ai/src/ai/runtime/          @gildrb
+# Security-critical Python: core subprocess, untrusted materials, network
+/src/heph/core.py      @gildrb
+/src/heph/armory.py    @gildrb
+/src/heph/extract.py   @gildrb
+/src/heph/llm.py       @gildrb
 
-# Providers and authentication
-/packages/ai/src/ai/providers/ @gildrb
-
-# Armory and knowledge
-/packages/harness/src/harness/armory/     @gildrb
-/packages/harness/src/harness/materials/  @gildrb
-/packages/harness/src/harness/rag/        @gildrb
-/packages/harness/src/harness/study/      @gildrb
-/packages/harness/src/harness/memory/     @gildrb
-/packages/harness/src/harness/parameters/ @gildrb
-
-# Security-critical redaction code
-/packages/ai/src/ai/logging/                  @gildrb
-/packages/harness/src/harness/privacy/      @gildrb
-/packages/harness/src/harness/diagnostics/  @gildrb
-
-# Infrastructure
-/packages/*/test/         @gildrb
-/docs/                    @gildrb
-/scripts/                 @gildrb
-
-# Infrastructure and build
+# Build, packaging and CI
 /pyproject.toml        @gildrb
-/.github/             @gildrb
+/hatch_build.py        @gildrb
+/uv.lock               @gildrb
+/.github/              @gildrb
+/docs/                 @gildrb

@@ -1,194 +1,57 @@
 # Configuration
 
-Heph can be configured through provider credentials, environment variables, the
-`/settings` TUI, and `heph config`. Armories keep their own materials,
-memory, chats, traces, indexes, and practice data, but model/provider preferences
-are machine-local user settings unless overridden by environment variables.
+Heph reads one optional file, `~/.config/heph/config.toml` (`$XDG_CONFIG_HOME/heph/config.toml`
+when `XDG_CONFIG_HOME` is set). Without it, Heph uses a local server at
+`http://127.0.0.1:8080/v1` and its first model. `heph config` shows the settings in use.
 
-Run `heph trust` at any time to see who owns the data, where Heph stores cache
-and state, and what leaves the machine for the selected compute mode.
-
-## Environment Variables
-
-### Model Configuration
-
-| Variable | Purpose |
-|----------|---------|
-| `OPENAI_API_KEY` | OpenAI API key |
-| `DEEPSEEK_API_KEY` | DeepSeek API key |
-| `OPENROUTER_API_KEY` | OpenRouter API key |
-| `ZAI_API_KEY` | Z.AI API key |
-| `CUSTOM_API_KEY` | Custom endpoint API key |
-| `HARNESS_BASE_URL` | Custom base URL for OpenAI-compatible endpoints |
-| `HARNESS_MODEL` | Default model name |
-
-### Runtime and Retrieval
-
-| Variable | Purpose |
-|----------|---------|
-| `HARNESS_MAX_TOKENS` | Max output tokens per response |
-| `HARNESS_TEMPERATURE` | Model sampling temperature |
-| `HARNESS_TRUST_ARMORY_SHELL` | Explicit armory path allowed to expose the agent shell tool |
-| `HARNESS_RAG_CONTEXT_BUDGET` | Token budget for retrieved context |
-| `HARNESS_FEATURE_FLAGS` | Comma-separated feature flags |
-| `HARNESS_PRIORITY_WEB_PREREQS` | Enable optional web-backed prerequisite hints in priority reports |
-| `HARNESS_EMBED_MODEL` | Provider embedding model; unset disables semantic retrieval |
-| `HARNESS_EXTRACTION_MODEL` | Background memory extraction model override |
-
-### Privacy and Diagnostics
-
-Heph has no hosted diagnostics, analytics, crash reporting, or telemetry settings.
-
-## TUI Settings
-
-Access settings via the `/settings` command in Heph:
-
-- **Appearance**: saved TUI theme preference; press Enter to cycle themes
-- **Activity trace**: local session trace visibility; defaults to minimal tool
-  calls
-- **Model thinking**: provider-exposed thinking visibility (`off`, `minimal`,
-  or `all`), defaulting to `minimal`; hidden model reasoning is not exposed by
-  providers that keep it private
-- **Live tokens**: show or hide token estimates in the TUI status bar; press
-  Enter to toggle
-- **Live cost**: show or hide cost estimates in the TUI status bar; press
-  Enter to toggle
-- **Vocabulary practice**: practice preferences; press Enter to cycle
-  modes
-- **Login / Logout**: provider authentication flow
-
-All supported settings are local; provider requests are the only model-related external traffic.
-
-## User Configuration
-
-Use `/models` or provider login for normal model selection. Advanced users can
-persist machine-local overrides with `heph config`:
-
-```bash
-heph config show
-heph config set model <model-id>
-heph config set temperature 0.2
-heph config set rag_context_budget 6000
-heph config set thinking_visibility minimal
-heph config set live_tokens_visible true
-heph config set live_cost_visible true
+```toml
+base_url = "http://127.0.0.1:8080/v1"
+model = ""              # empty: first id from GET {base_url}/models
+api_key_env = ""        # name of an env var holding a key, for hosted providers
+max_tokens = 2048
+temperature = 0.2
+evidence_tokens = 3000  # evidence budget per question
 ```
 
-These preferences are stored in the user config directory, not inside
-`.armories`. Provider credentials stay in the OS keyring, environment variables,
-or session memory fallback; they are never written into armory folders.
-The `/settings` TUI controls and direct status-bar toggles such as `/cost`
-update the same config file, so model-thinking and status-bar usage visibility
-are remembered across TUI restarts.
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `base_url` | `http://127.0.0.1:8080/v1` | OpenAI-compatible API root (`http://` or `https://`) |
+| `model` | empty | model id; empty picks the first id the server lists |
+| `api_key_env` | empty | env var that holds the API key; must be set when named |
+| `max_tokens` | `2048` | answer token limit |
+| `temperature` | `0.2` | sampling temperature |
+| `evidence_tokens` | `3000` | how much evidence goes into a question (at most 12 passages) |
 
-Use `heph local` or `/local` for private local llama.cpp models from the curated
-catalog:
+Unknown keys and wrong types are errors, reported with the file path.
 
-```bash
-heph local search gemma
-heph local install <owner>/<repo>:Q4_K_M
-heph local status
-heph local revalidate llama-cpp/<owner>/<repo>:Q4_K_M
-heph local stop
+## Environment
+
+| Variable | Overrides |
+| --- | --- |
+| `HEPH_BASE_URL` | `base_url` |
+| `HEPH_MODEL` | `model` |
+| `HEPH_API_KEY` | the API key (takes precedence over `api_key_env`) |
+| `HEPH_ARMORY_HOME` | where named armories live (default `~/.armories`) |
+
+## Servers
+
+Local servers need no key:
+
+```toml
+base_url = "http://127.0.0.1:8080/v1"   # llama.cpp llama-server
+# base_url = "http://127.0.0.1:8000/v1" # vLLM
+# base_url = "http://127.0.0.1:30000/v1" # SGLang
+# base_url = "http://127.0.0.1:11434/v1" # Ollama
 ```
 
-The guided `/local` list shows publisher-owned GGUF releases capped at 16 GB
-recommended RAM. Each entry shows the download size and RAM guidance before
-loading, and Heph asks for confirmation before it downloads or starts a model.
-Heph downloads the managed `llama-server` binary into
-`~/.cache/harness/llama.cpp/bin/`, stores GGUF cache under
-`~/.cache/harness/llama.cpp/models`, and persists local model validation state
-in the user config directory. Local models appear in `/models` only after the
-tool-call probe passes.
+A hosted provider needs a key. Keep the key in the environment, not in the file:
 
-Use `heph local status` to inspect the current local model cache and managed
-server state.
-
-## Model Providers
-
-### OpenAI
-
-```bash
-export OPENAI_API_KEY="sk-..."
+```toml
+base_url = "https://openrouter.ai/api/v1"
+model = "qwen/qwen3-32b"
+api_key_env = "OPENROUTER_API_KEY"
 ```
 
-Or use `/login` with your OpenAI account.
-
-### DeepSeek
-
-```bash
-export DEEPSEEK_API_KEY="sk-..."
-```
-
-DeepSeek reasoning models use DeepSeek thinking mode and native reasoning effort
-values.
-
-### OpenRouter
-
-```bash
-export OPENROUTER_API_KEY="sk-..."
-```
-
-### Pollinations AI
-
-No configuration required - free and open.
-
-### Z.AI
-
-```bash
-export ZAI_API_KEY="sk-..."
-```
-
-### Local llama.cpp
-
-No API key is required. Use `/local` for a guided install or `heph local` for
-CLI management. The built-in catalog is limited to low-footprint publisher GGUF
-releases, while advanced users can still install a local `.gguf` file by path.
-Heph binds the managed server to `127.0.0.1` and never falls back to a hosted
-provider for a local model.
-
-### Custom Endpoint
-
-```bash
-export CUSTOM_API_KEY="your-key"
-export HARNESS_BASE_URL="https://your-endpoint.com/v1"
-export HARNESS_MODEL="your-model-name"
-```
-
-## File Ignore Patterns
-
-Create `.harness/ignore` in your armory to exclude files from indexing:
-
-```
-# Ignore patterns (similar to .gitignore)
-*.tmp
-draft-*
-old/
-```
-
-## Armory State
-
-Each armory stores local state under `.harness/`, including retrieval indexes,
-memory, chats, traces, and practice attempt logs. Index files are rebuildable
-machine-local state; source materials plus armory metadata are enough for Heph to
-open a copied or synced armory and rebuild what it needs.
-
-## Advanced Configuration
-
-### Retrieval
-
-The single default install uses lexical stdlib BM25 and TF-IDF retrieval. It
-does not install an ML runtime, download models, or provide dense retrieval or
-reranking.
-
-### Profiling
-
-Enable CPU or memory profiling:
-
-```bash
-heph --profile
-heph --profile-memory
-```
-
-CPU profiles are written to `~/.cache/harness/profiles/`. Memory profiling prints
-the top allocations to stderr when Heph exits.
+Heph makes one chat completion call per question and keeps the start of the prompt the
+same across turns (fixed system prompt, then history, then the evidence and the question),
+so servers that reuse the KV cache answer follow-ups faster.
