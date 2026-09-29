@@ -10,8 +10,8 @@ runs:
     - name: Install Bend
       shell: bash
       env:
-        BEND_VERSION: "2.0.27"
-        BEND_SHA256: "58adc86af6605ed0c48f7d84e4c23028f78893ce4a867a20a4f004b11582687b"
+        BEND_VERSION: "2.0.32"
+        BEND_SHA256: "5c365ddb12954d0933cef751802e0f7d9875f842edcb80f9661f89cd1a9ff7b6"
       run: |
         set -euo pipefail
         if [ "$RUNNER_OS" != "Linux" ] || [ "$RUNNER_ARCH" != "X64" ]; then

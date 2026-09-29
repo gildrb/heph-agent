@@ -80,33 +80,42 @@ def tget(-T: Data, +t: Tr<T>, +i: U32) -> T:
   +n = tsize(T, t)
   tget.go(T, t, n, U32.and(i, U32.sub(n, 1)))
 
-def get_if(-T: Data, +l: Tr<T>, +r: Tr<T>, +h: U32, +i: U32, z: Bool,
-  gl: {Array.get.go(T, emb(T, l), h, i) == (emb(T, l), tget.go(T, l, h, i)) : Array<T> & T},
-  gr: {Array.get.go(T, emb(T, r), h, U32.sub(i, h)) == (emb(T, r), tget.go(T, r, h, U32.sub(i, h))) :
-    Array<T> & T}
-) -> {Array.get.if(T, emb(T, l), emb(T, r), h, i, z) ==
-  (ANode{emb(T, l), emb(T, r)}, Bool.pick(T, z, tget.go(T, l, h, i), tget.go(T, r, h, U32.sub(i, h)))) :
+# Base's Array.get.go takes z, which half of a node the index is in: its
+# caller computes it as U32.is_lt(i, U32.shr(n)), the test tget.go makes
+def get_node(-T: Data, +l: Tr<T>, +r: Tr<T>, +n: U32, +i: U32, z: Bool,
+  gl: {Array.get.go(T, emb(T, l), U32.shr(n), i, U32.is_lt(i, U32.shr(U32.shr(n)))) ==
+    (emb(T, l), tget.go(T, l, U32.shr(n), i)) : Array<T> & T},
+  gr: {Array.get.go(T, emb(T, r), U32.shr(n), U32.sub(i, U32.shr(n)),
+    U32.is_lt(U32.sub(i, U32.shr(n)), U32.shr(U32.shr(n)))) ==
+    (emb(T, r), tget.go(T, r, U32.shr(n), U32.sub(i, U32.shr(n)))) : Array<T> & T}
+) -> {Array.get.go(T, ANode{emb(T, l), emb(T, r)}, n, i, z) ==
+  (ANode{emb(T, l), emb(T, r)},
+    Bool.pick(T, z, tget.go(T, l, U32.shr(n), i), tget.go(T, r, U32.shr(n), U32.sub(i, U32.shr(n))))) :
   Array<T> & T}:
   match z:
     case True{}:
-      %Equal.sym(Array<T> & T, Array.get.go(T, emb(T, l), h, i), (emb(T, l), tget.go(T, l, h, i)), gl) :
+      +h = U32.shr(n)
+      %Equal.sym(Array<T> & T, Array.get.go(T, emb(T, l), h, i, U32.is_lt(i, U32.shr(h))),
+        (emb(T, l), tget.go(T, l, h, i)), gl) :
         {Array.swap.lo(T, emb(T, r), _) == (ANode{emb(T, l), emb(T, r)}, tget.go(T, l, h, i)) : Array<T> & T}
       {==}
     case False{}:
-      %Equal.sym(Array<T> & T, Array.get.go(T, emb(T, r), h, U32.sub(i, h)),
-        (emb(T, r), tget.go(T, r, h, U32.sub(i, h))), gr) :
-        {Array.swap.hi(T, emb(T, l), _) == (ANode{emb(T, l), emb(T, r)}, tget.go(T, r, h, U32.sub(i, h))) :
-          Array<T> & T}
+      +h = U32.shr(n)
+      +j = U32.sub(i, h)
+      %Equal.sym(Array<T> & T, Array.get.go(T, emb(T, r), h, j, U32.is_lt(j, U32.shr(h))),
+        (emb(T, r), tget.go(T, r, h, j)), gr) :
+        {Array.swap.hi(T, emb(T, l), _) == (ANode{emb(T, l), emb(T, r)}, tget.go(T, r, h, j)) : Array<T> & T}
       {==}
 
 def get_go_emb(-T: Data, +t: Tr<T>, +n: U32, +i: U32) ->
-  {Array.get.go(T, emb(T, t), n, i) == (emb(T, t), tget.go(T, t, n, i)) : Array<T> & T}:
+  {Array.get.go(T, emb(T, t), n, i, U32.is_lt(i, U32.shr(n))) == (emb(T, t), tget.go(T, t, n, i)) :
+    Array<T> & T}:
   match t:
     case TL{+v}:
       {==}
     case TN{+l, +r}:
       +h = U32.shr(n)
-      get_if(T, l, r, h, i, U32.is_lt(i, h), get_go_emb(T, l, h, i), get_go_emb(T, r, h, U32.sub(i, h)))
+      get_node(T, l, r, n, i, U32.is_lt(i, h), get_go_emb(T, l, h, i), get_go_emb(T, r, h, U32.sub(i, h)))
 
 # Array.get on emb(t) reads tget and hands emb(t) back
 def get_emb(-T: Data, +t: Tr<T>, +i: U32) ->
@@ -132,38 +141,45 @@ def tset(-T: Data, +t: Tr<T>, +i: U32, +v: T) -> Tr<T>:
   +n = tsize(T, t)
   tset.go(T, t, n, U32.and(i, U32.sub(n, 1)), v)
 
-def swap_if(-T: Data, +l: Tr<T>, +r: Tr<T>, +h: U32, +i: U32, +v: T, z: Bool,
-  gl: {Array.swap.go(T, emb(T, l), h, i, v) == (emb(T, tset.go(T, l, h, i, v)), tget.go(T, l, h, i)) :
-    Array<T> & T},
-  gr: {Array.swap.go(T, emb(T, r), h, U32.sub(i, h), v) ==
-    (emb(T, tset.go(T, r, h, U32.sub(i, h), v)), tget.go(T, r, h, U32.sub(i, h))) : Array<T> & T}
-) -> {Array.swap.if(T, emb(T, l), emb(T, r), h, i, v, z) ==
-  (emb(T, Bool.pick(Tr<T>, z, TN{tset.go(T, l, h, i, v), r}, TN{l, tset.go(T, r, h, U32.sub(i, h), v)})),
-    Bool.pick(T, z, tget.go(T, l, h, i), tget.go(T, r, h, U32.sub(i, h)))) : Array<T> & T}:
+# Array.swap.go takes z like Array.get.go
+def swap_node(-T: Data, +l: Tr<T>, +r: Tr<T>, +n: U32, +i: U32, +v: T, z: Bool,
+  gl: {Array.swap.go(T, emb(T, l), U32.shr(n), i, v, U32.is_lt(i, U32.shr(U32.shr(n)))) ==
+    (emb(T, tset.go(T, l, U32.shr(n), i, v)), tget.go(T, l, U32.shr(n), i)) : Array<T> & T},
+  gr: {Array.swap.go(T, emb(T, r), U32.shr(n), U32.sub(i, U32.shr(n)), v,
+    U32.is_lt(U32.sub(i, U32.shr(n)), U32.shr(U32.shr(n)))) ==
+    (emb(T, tset.go(T, r, U32.shr(n), U32.sub(i, U32.shr(n)), v)),
+      tget.go(T, r, U32.shr(n), U32.sub(i, U32.shr(n)))) : Array<T> & T}
+) -> {Array.swap.go(T, ANode{emb(T, l), emb(T, r)}, n, i, v, z) ==
+  (emb(T, Bool.pick(Tr<T>, z, TN{tset.go(T, l, U32.shr(n), i, v), r},
+    TN{l, tset.go(T, r, U32.shr(n), U32.sub(i, U32.shr(n)), v)})),
+    Bool.pick(T, z, tget.go(T, l, U32.shr(n), i), tget.go(T, r, U32.shr(n), U32.sub(i, U32.shr(n))))) :
+  Array<T> & T}:
   match z:
     case True{}:
-      %Equal.sym(Array<T> & T, Array.swap.go(T, emb(T, l), h, i, v),
+      +h = U32.shr(n)
+      %Equal.sym(Array<T> & T, Array.swap.go(T, emb(T, l), h, i, v, U32.is_lt(i, U32.shr(h))),
         (emb(T, tset.go(T, l, h, i, v)), tget.go(T, l, h, i)), gl) :
         {Array.swap.lo(T, emb(T, r), _) ==
           (ANode{emb(T, tset.go(T, l, h, i, v)), emb(T, r)}, tget.go(T, l, h, i)) : Array<T> & T}
       {==}
     case False{}:
-      %Equal.sym(Array<T> & T, Array.swap.go(T, emb(T, r), h, U32.sub(i, h), v),
-        (emb(T, tset.go(T, r, h, U32.sub(i, h), v)), tget.go(T, r, h, U32.sub(i, h))), gr) :
+      +h = U32.shr(n)
+      +j = U32.sub(i, h)
+      %Equal.sym(Array<T> & T, Array.swap.go(T, emb(T, r), h, j, v, U32.is_lt(j, U32.shr(h))),
+        (emb(T, tset.go(T, r, h, j, v)), tget.go(T, r, h, j)), gr) :
         {Array.swap.hi(T, emb(T, l), _) ==
-          (ANode{emb(T, l), emb(T, tset.go(T, r, h, U32.sub(i, h), v))}, tget.go(T, r, h, U32.sub(i, h))) :
-          Array<T> & T}
+          (ANode{emb(T, l), emb(T, tset.go(T, r, h, j, v))}, tget.go(T, r, h, j)) : Array<T> & T}
       {==}
 
 def swap_go_emb(-T: Data, +t: Tr<T>, +n: U32, +i: U32, +v: T) ->
-  {Array.swap.go(T, emb(T, t), n, i, v) == (emb(T, tset.go(T, t, n, i, v)), tget.go(T, t, n, i)) :
-    Array<T> & T}:
+  {Array.swap.go(T, emb(T, t), n, i, v, U32.is_lt(i, U32.shr(n))) ==
+    (emb(T, tset.go(T, t, n, i, v)), tget.go(T, t, n, i)) : Array<T> & T}:
   match t:
     case TL{+x}:
       {==}
     case TN{+l, +r}:
       +h = U32.shr(n)
-      swap_if(T, l, r, h, i, v, U32.is_lt(i, h), swap_go_emb(T, l, h, i, v),
+      swap_node(T, l, r, n, i, v, U32.is_lt(i, h), swap_go_emb(T, l, h, i, v),
         swap_go_emb(T, r, h, U32.sub(i, h), v))
 
 # Array.set on emb(t) is emb of tset
@@ -173,7 +189,7 @@ def set_emb(-T: Data, +t: Tr<T>, +i: U32, +v: T) ->
   %Equal.sym(Array<T> & U32, Array.size(T, emb(T, t)), (emb(T, t), n), size_emb(T, t)) :
     {Array.set.fin(T, Array.swap.at(T, i, v, _)) == emb(T, tset(T, t, i, v)) : Array<T>}
   +m = U32.and(i, U32.sub(n, 1))
-  %Equal.sym(Array<T> & T, Array.swap.go(T, emb(T, t), n, m, v),
+  %Equal.sym(Array<T> & T, Array.swap.go(T, emb(T, t), n, m, v, U32.is_lt(m, U32.shr(n))),
     (emb(T, tset.go(T, t, n, m, v)), tget.go(T, t, n, m)), swap_go_emb(T, t, n, m, v)) :
     {Array.set.fin(T, _) == emb(T, tset(T, t, i, v)) : Array<T>}
   {==}

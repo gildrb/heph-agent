@@ -49,7 +49,7 @@ jobs:
           cache-dependency-glob: "uv.lock"
       - uses: ./.github/actions/setup-bend
       - name: Prove the core laws and check the committed core C is current
-        # core/build.sh runs `bend PROOF.bend` (must print "All terms check.") first.
+        # core/build.sh runs `bend PROOF.bend` (must print "ALL PROOFS CHECK") first.
         run: |
           core/build.sh
           git diff --exit-code -- core/build/heph-core.c

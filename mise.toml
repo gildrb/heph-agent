@@ -1,5 +1,5 @@
 # Bend version the core's proofs and emitted C are checked with; keep it equal to
 # BEND_VERSION in .github/actions/setup-bend/action.yml.
 [tools."github:bendlang/bend"]
-version = "2.0.27"
+version = "2.0.32"
 asset_pattern = 'bend-*-{{ os(macos="darwin") }}-{{ arch() }}.tar.gz'

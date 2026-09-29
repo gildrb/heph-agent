@@ -18,7 +18,7 @@ uv lock --check
 ```
 
 After changing `core/*.bend`, run `core/build.sh`: it runs `bend PROOF.bend` (must print
-`All terms check.`), regenerates `core/build/heph-core.c` and compiles the binary. Commit
+`ALL PROOFS CHECK`), regenerates `core/build/heph-core.c` and compiles the binary. Commit
 the regenerated C with the change; CI fails when it is stale. The proofs are checked with
 one Bend version, pinned in `mise.toml` (mise selects it inside the repo) and in
 `.github/actions/setup-bend/action.yml` for CI; bump both together.

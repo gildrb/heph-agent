@@ -28,8 +28,8 @@ Term stdin_read_run(Env e, Term* f, IoWork* w) {
     n += (u64)r;
   }
   // at least one pad byte, so the slot count n / 4 + 1 is never 0
-  Cls c = cls_fit((u32)(n / 4 + 1));
-  Loc l = heap_alloc(e, buf_wcls(c));
+  u32 c = cls_fit((u32)(n / 4 + 1));
+  u64 l = heap_alloc(e, buf_wcls(c));
   if (err_seen(e.mem)) {
     free(buf);
     return io_fail(e, ENOMEM, "heph-core: out of memory for the request");

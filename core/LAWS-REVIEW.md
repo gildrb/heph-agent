@@ -3,8 +3,8 @@
 The claims are the same nine. What changed is what they quantify over: the
 packed core reads bytes and postings out of `Array<U32>` buffers, so the laws
 now take buffers and offsets, and `Spec.*` reads them back into the lists the
-old laws spoke about. Every law is proven (`bend PROOF.bend`: "All terms
-check.") and was mutation-checked.
+old laws spoke about. Every law is proven (`bend PROOF.bend`: "ALL PROOFS
+CHECK", also under `--verdict`) and was mutation-checked.
 
 | law | old (list core) | new (packed core) |
 |---|---|---|
@@ -29,4 +29,4 @@ check.") and was mutation-checked.
 1. **New hypothesis on rank_scores and rank_complete: `n <= 2^d` for some `d <= 31`.** The core's score table is indexed by U32; beyond 2^31 slots its indices would wrap, and the list spec would not. main.bend already rejects `n >= 2^24`. (The bound is stated through `d` because a literal 2^31 in a law makes the checker expand it.)
 2. `idf` and `tfn` come from score.bend, shared with the core: the fixed-point formula is the definition of the score. The old laws called `C.idf`/`C.tfn`.
 3. chunk_text now only constrains chunk bounds: chunks carry no text, so the law says every chunk lies inside the document. A core that breaks it also breaks chunk_cover.
-4. The proofs trust Bend 2.0.27's checker, compiler and runtime, including Base's `Array` (a tree in proofs, a flat buffer in generated C) and the `nat_chk` 2^48 limit that main.bend's range checks keep clear of.
+4. The proofs trust Bend 2.0.32's checker, compiler and runtime, including Base's `Array` (a tree in proofs, a flat buffer in generated C) and the `nat_chk` 2^48 limit that main.bend's range checks keep clear of. `bend PROOF.bend --verdict` also rechecks them with the BendTT kernel proven in Lean (Lean v4.34.0).

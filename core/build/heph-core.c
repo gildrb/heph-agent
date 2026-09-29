@@ -2,9 +2,11 @@
 // Imports
 // =======
 
+// The Objective-C headers take #include, not #import: a build
+// (-o) reads an #import as the framework of an effect.
+
 #pragma clang fp contract(off)
 
-// the device dialect: a second RTC lane adds its macro here
 #if defined(__CUDACC_RTC__)
 #define BEND_RTC 1
 #endif
@@ -37,7 +39,6 @@ using namespace metal;
 #include <mach-o/dyld.h>
 #endif
 #ifdef __OBJC__
-// #include, not #import: bend -o reads an #import as an effect's framework
 #include <Metal/Metal.h>
 #include <Foundation/Foundation.h>
 #elif BEND_CUDA
@@ -51,43 +52,37 @@ using namespace metal;
 // Dialect
 // =======
 
+// Metal needs coherent(device) (MSL 3.2), or M1-class parts lose stores
+// across the threadgroups of a dispatch. CUDA keeps plain data cacheable
+// in L1: lanes hand off through a32 and FENCE. Only clang 19+ has both
+// preserve_none and preserve_most, and compiles preserve_most soundly. A
+// segment is a case of the device's switch; on the host, a preserve_none
+// function (WL_SIG) entered by musttail, its words fresh at WL_OPEN.
+
 #ifdef __METAL_VERSION__
-// coherent(device) (MSL 3.2): M1-class parts else lose stores across a
-// dispatch's threadgroups
 #if __METAL_VERSION__ >= 320
 #define DEV     coherent(device) device
 #else
 #define DEV     device
 #endif
-#define GA32    threadgroup atomic_uint
 #define THR     thread
+#define TG      threadgroup
 #define INLINE  inline
 #define OUTLINE static
 #define CONSTV  constant
 #define DEVICE  1
 #define CLZ(x)  clz(x)
-#define A32(p)  ((DEV atomic_uint*)(p))
-#define RLX     memory_order_relaxed
 #define FENCE() atomic_thread_fence(mem_flags::mem_device, memory_order_seq_cst)
 #define BAR()   threadgroup_barrier(mem_flags::mem_threadgroup)
 #define BARD()  threadgroup_barrier(mem_flags::mem_device \
   | mem_flags::mem_threadgroup)
-
-#define g32_ini(p)    atomic_store_explicit(p, 0, RLX)
-#define g32_add(p, v) atomic_fetch_add_explicit(p, v, RLX)
-#define g32_get(p)    atomic_load_explicit(p, RLX)
 #else
-// CUDA keeps plain data L1-cacheable: lanes hand off through a32 + FENCE
 #define DEV
 #define THR
+#define TG
 #define INLINE  static inline
 #define CONSTV  static const
-
-#define g32_ini(p)    a32_store(p, 0)
-#define g32_add(p, v) a32_add(p, v)
-#define g32_get(p)    a32_load(p)
 #ifdef BEND_RTC
-#define GA32    __shared__ u32
 #define OUTLINE static __attribute__((noinline))
 #define DEVICE  1
 #define CLZ(x)  (u32)__clz((int)(x))
@@ -96,7 +91,6 @@ using namespace metal;
 #define BARD()  \
   { __threadfence(); __syncthreads(); }
 #else
-// only clang 19+ has both, and only it compiles preserve_most soundly
 #if __has_attribute(preserve_none) && __has_attribute(preserve_most)
 #define PRESERVE(A) __attribute__((A))
 #else
@@ -105,12 +99,11 @@ using namespace metal;
 #define OUTLINE static __attribute__((noinline, cold)) PRESERVE(preserve_most)
 #define DEVICE  0
 #define CLZ(x)  (u32)__builtin_clz(x)
+#define FENCE() ((void)0)
 #endif
 #endif
 #define FAR static __attribute__((noinline))
 
-// A segment: a case of the device's switch; on the host, a preserve_none
-// function (WL_SIG) entered by musttail, its words fresh at WL_OPEN.
 #if DEVICE
 #define LOCK(l)
 #define UNLOCK(l)
@@ -121,7 +114,7 @@ using namespace metal;
 #else
 #define LOCK(l)    while (__atomic_exchange_n(&(l), 1, __ATOMIC_ACQUIRE)) {}
 #define UNLOCK(l)  __atomic_store_n(&(l), 0, __ATOMIC_RELEASE)
-#define WL_FN      static PRESERVE(preserve_none) __attribute__((noinline)) Reply
+#define WL_FN      static PRESERVE(preserve_none) __attribute__((noinline)) Term
 #define WL_CASE(F) WL_FN WL_##F(WL_SIG)
 #define WL_OPEN    { WL_BANK u32 rn;
 #define WL_JMP(F)  __attribute__((musttail)) return WL_##F(WL_ALL)
@@ -131,16 +124,16 @@ using namespace metal;
 #define WL_SPUN     } break;
 #define WL_AGAIN(F) continue
 
-#define LANE_STEP (DEVICE ? (int64_t)CUBE : 1)
-#define STK(I)    sp[(int64_t)(I) * LANE_STEP]
+#define LANE_STEP (DEVICE ? (long)CUBE : 1)
+#define STK(I)    sp[(long)(I) * LANE_STEP]
 
-#define WL_RETN(N)  { rn = (N); sp -= LANE_STEP; WL_DYN((Fid)STK(0)); }
+#define WL_RETN(N)  { rn = (N); sp -= LANE_STEP; WL_DYN((u32)STK(0)); }
 #define WL_CONT     STK(-3)
 #define WL_IDX      STK(-2)
 #define WL_POPN(N)  sp -= N * LANE_STEP
 #define WL_PUSHN(N) sp += N * LANE_STEP
 #define WL_FRAME(T) \
-  Loc wtl = task_tail(T); \
+  u64 wtl = task_tail(T); \
   u64 wtw = e.mem[wtl + 1]; \
   STK(0) = e.mem[wtl]; \
   STK(1) = (wtw >> 32) & 0xFFFF; \
@@ -164,57 +157,21 @@ using namespace metal;
 typedef ulong u64;
 typedef uint  u32;
 typedef uchar u8;
-typedef float f32;
 #elif defined(BEND_RTC)
 typedef unsigned long long u64;
-typedef long long          int64_t;
 typedef unsigned int       u32;
 typedef unsigned char      u8;
-typedef float              f32;
 #else
 typedef uint64_t u64;
 typedef uint32_t u32;
 typedef uint8_t  u8;
-typedef float    f32;
 #endif
-
-typedef u64 Loc;
-#define LOC_MASK ((1ull << 40) - 1)
-
-typedef u32 Cls;
-typedef u32 Fid;
+typedef float f32;
 
 typedef u64 Term;
-#define TAG_PAK 1ull
-#define TAG_CTR 2ull
-#define TAG_CLO 3ull
-#define TAG_BUF 4ull
-#define TAG_TSK 5ull
-#define TAG_ARR 6ull
-
-#define TERM_HOLE (~0ull)
-
-#define RFC_BIT  (1ull << 63)
-#define RFC_CNT  ((1u << 24) - 1)
-
-typedef Term Reply;
-
-typedef u32 Err;
-#define ERR_RING 1
-#define ERR_TAGS 2
-#define ERR_HEAP 3
-#define ERR_FIDS 4
-#define ERR_NATS 5
-#define ERR_RFCS 6
-#define ERR_DEEP 7
-#define ERR_ARRS 8
-
-typedef u32 Ring;
-
-typedef DEV u64* Corpus;
 
 typedef struct {
-  Corpus   mem;
+  DEV u64* mem;
   DEV u64* alc;
 } Env;
 
@@ -225,27 +182,36 @@ typedef struct {
   u32 top;
 } Bank;
 
-typedef DEV Term* Stk;
-
-typedef Term Nat;
-#define NAT_IMM ((1ull << 48) - 1)
-
-typedef Term U32;
-
 #if DEVICE
 typedef u32 u32a;
 #else
 typedef u32 __attribute__((may_alias)) u32a;
 #endif
 
-#ifdef __METAL_VERSION__
-typedef threadgroup atomic_uint* Cur;
-#else
-typedef u32* Cur;
-#endif
-
 // Constants
 // =========
+
+#define TAG_PAK 1ull
+#define TAG_CTR 2ull
+#define TAG_CLO 3ull
+#define TAG_BUF 4ull
+#define TAG_TSK 5ull
+#define TAG_ARR 6ull
+
+#define TERM_HOLE (~0ull)
+#define LOC_MASK  ((1ull << 40) - 1)
+#define RFC_BIT   (1ull << 63)
+#define RFC_CNT   ((1u << 24) - 1)
+#define NAT_IMM   ((1ull << 48) - 1)
+
+#define ERR_RING 1
+#define ERR_TAGS 2
+#define ERR_HEAP 3
+#define ERR_FIDS 4
+#define ERR_NATS 5
+#define ERR_RFCS 6
+#define ERR_DEEP 7
+#define ERR_ARRS 8
 
 #define LINE      16
 #define PAGE_BITS 7
@@ -261,7 +227,6 @@ typedef u32* Cur;
 #define NCLS_ALL  32
 #define IO_HELP   64
 
-#define ALC_WORDS NCLS_ALL
 #define TG_HOLD   2304
 #define CHUNK     256
 #define CAP_WORDS 32768
@@ -282,7 +247,7 @@ typedef u32* Cur;
 
 #define PAGE_UP(n) (((n) + PAGE_LEN - 1) & ~(PAGE_LEN - 1))
 #define ALC_OFF  PAGE_UP(H_BANK + 3 * NCLS_ALL)
-#define RING_OFF (ALC_OFF + CUBE * 2 * ALC_WORDS)
+#define RING_OFF (ALC_OFF + CUBE * 2 * NCLS_ALL)
 #define STAK_OFF (RING_OFF + CUBE * RING_WORDS)
 #define STAT_OFF (STAK_OFF + CUBE * STAK_LEN)
 #define HEAP_OFF (STAT_OFF + PAGE_UP(STAT_LEN))
@@ -290,26 +255,25 @@ typedef u32* Cur;
 // Globals
 // =======
 
+// The bag is 2^CUBE_LOG groups of CUBE_T lanes (a -D constant on the
+// device). The device program compiles from the binary's own text.
+
 #if !DEVICE
 
-typedef pthread_mutex_t lock;
-
-static Corpus CORPUS;
-static u64    ALC[CUBE_T + 1][3 * ALC_WORDS] __attribute__((aligned(128)));
+static u64*    CORPUS;
+static u64    ALC[CUBE_T + 1][3 * NCLS_ALL] __attribute__((aligned(128)));
 static u32    KEEP_WORDS;
-// the bag: 2^CUBE_LOG groups of CUBE_T lanes (a -D constant on the device)
 static u32    CUBE_LOG = 7;
 static u32    bank_lock;
 
-static u32            pool_size;
-static _Atomic u32    pool_row;
-static bool           pool_grow;
-static _Atomic u64    pool_tick;
-static _Atomic u32    pool_done;
-static lock           pool_lock = PTHREAD_MUTEX_INITIALIZER;
-static pthread_cond_t pool_wake = PTHREAD_COND_INITIALIZER;
+static u32             pool_size;
+static u32             pool_row;
+static bool            pool_grow;
+static u32             pool_tick;
+static u32             pool_done;
+static pthread_mutex_t pool_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t  pool_wake = PTHREAD_COND_INITIALIZER;
 
-// The device program compiles from the binary's own text.
 #if BEND_METAL || BEND_CUDA
 #pragma clang diagnostic ignored "-Wc23-extensions"
 static const char BEND_SRC[] = {
@@ -329,7 +293,7 @@ static CUmodule   gpu_lib;
 static CUfunction gpu_pso;
 #endif
 static bool io_gpu;
-static Stk  io_stk;
+static DEV Term*  io_stk;
 
 static const char* CLI_HELP =
   "usage: %s [options] [arguments]\n"
@@ -337,7 +301,7 @@ static const char* CLI_HELP =
   "  --gpu on|off|4GB  run ! calls on the GPU, over this much of its memory\n"
   "                    (default: on if present, over 2GB on Metal)\n"
   "  --gpu-build       write the GPU program and exit\n"
-  "  --help            show this text\n"
+  "  --bend-help       show this text\n"
   "  --                the rest are the program's arguments (IO.args)\n";
 
 #endif
@@ -470,11 +434,8 @@ static const char* CLI_HELP =
 #define FID_CLO_APPLY 57
 #define FID_EXIT 58
 #define FID_ENTER 59
-CONSTV u8 FID_ARITY_T[] = { 3, 3, 2, 2, 3, 1, 1, 2, 3, 2, 2, 2, 2, 2, 5, 7, 6, 6, 5, 5, 7, 4, 1, 1, 3, 2, 8, 10, 10, 10, 10, 12, 1, 1, 2, 12, 12, 2, 1, 2, 3, 10, 12, 3, 3, 2, 0, 1, 2, 1, 2, 3, 1, 12, 1, 3, 1, 2 };
-CONSTV u8 FID_FLAG_T[] = { 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2 };
-CONSTV u8 FID_RESW_T[] = { 0, 1, 0, 1, 0, 1, 0, 1, 1, 1, 0, 1, 1, 0, 0, 1, 0, 3, 0, 3, 0, 2, 0, 1, 0, 0, 0, 2, 1, 2, 1, 0, 0, 0, 0, 11, 0, 0, 0, 0, 0, 0, 11, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 11, 0, 0, 0, 0 };
-CONSTV u8 CID_ARITY_T[] = { 2, 0, 2, 2, 1, 2, 1, 1, 0, 1, 0, 0, 0, 1, 0, 1, 8, 10, 8, 2, 0, 0, 0, 0, 0, 4, 0, 2, 4, 7, 2, 0, 0, 0, 3, 4, 4, 0, 0, 0, 1, 2, 3, 3, 5, 4, 6, 3, 0, 3, 2, 0, 0, 0, 2, 2, 5, 5, 7, 3, 3, 2, 5, 1, 3 };
-CONSTV u8 CID_HOT_T[] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+CONSTV u8 FID_T[][3] = { { 3, 0, 2 }, { 3, 1, 2 }, { 2, 0, 2 }, { 2, 1, 2 }, { 3, 0, 2 }, { 1, 1, 2 }, { 1, 0, 2 }, { 2, 1, 2 }, { 3, 1, 2 }, { 2, 1, 2 }, { 2, 0, 2 }, { 2, 1, 2 }, { 2, 1, 2 }, { 2, 0, 2 }, { 5, 0, 2 }, { 7, 1, 2 }, { 6, 0, 2 }, { 6, 3, 2 }, { 5, 0, 2 }, { 5, 3, 2 }, { 7, 0, 2 }, { 4, 2, 2 }, { 1, 0, 2 }, { 1, 1, 2 }, { 3, 0, 2 }, { 2, 0, 2 }, { 8, 0, 2 }, { 10, 2, 2 }, { 10, 1, 2 }, { 10, 2, 2 }, { 10, 1, 2 }, { 12, 0, 2 }, { 1, 0, 2 }, { 1, 0, 2 }, { 2, 0, 2 }, { 12, 11, 2 }, { 12, 0, 2 }, { 2, 0, 2 }, { 1, 0, 2 }, { 2, 0, 2 }, { 3, 0, 2 }, { 10, 0, 2 }, { 12, 11, 2 }, { 3, 0, 2 }, { 3, 0, 2 }, { 2, 1, 2 }, { 0, 0, 2 }, { 1, 0, 2 }, { 2, 0, 2 }, { 1, 0, 2 }, { 2, 0, 2 }, { 3, 0, 2 }, { 1, 0, 2 }, { 12, 11, 2 }, { 1, 0, 2 }, { 3, 0, 2 }, { 1, 0, 2 }, { 2, 0, 2 } };
+CONSTV u8 CID_T[][2] = { { 2, 0 }, { 0, 0 }, { 2, 0 }, { 2, 0 }, { 1, 0 }, { 2, 0 }, { 1, 0 }, { 1, 0 }, { 0, 0 }, { 1, 0 }, { 0, 0 }, { 0, 0 }, { 0, 0 }, { 1, 0 }, { 0, 0 }, { 1, 0 }, { 8, 0 }, { 10, 0 }, { 8, 0 }, { 2, 0 }, { 0, 0 }, { 0, 0 }, { 0, 0 }, { 0, 0 }, { 0, 0 }, { 4, 0 }, { 0, 0 }, { 2, 0 }, { 4, 0 }, { 7, 0 }, { 2, 0 }, { 0, 0 }, { 0, 0 }, { 0, 0 }, { 3, 0 }, { 4, 0 }, { 4, 0 }, { 0, 0 }, { 0, 0 }, { 0, 0 }, { 1, 0 }, { 2, 0 }, { 3, 0 }, { 3, 0 }, { 5, 0 }, { 4, 0 }, { 6, 0 }, { 3, 0 }, { 0, 0 }, { 3, 0 }, { 2, 0 }, { 0, 0 }, { 0, 0 }, { 0, 0 }, { 2, 0 }, { 2, 0 }, { 5, 0 }, { 5, 0 }, { 7, 0 }, { 3, 0 }, { 3, 0 }, { 2, 0 }, { 5, 0 }, { 1, 0 }, { 3, 0 } };
 #define STAT_LEN 458
 
 #define WL_RESW 11
@@ -530,7 +491,7 @@ CONSTV u8 CID_HOT_T[] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 
 
 #define WL_TAKE(V) r0 = (V)[0]; r1 = (V)[1]; r2 = (V)[2]; r3 = (V)[3]; r4 = (V)[4]; r5 = (V)[5]; r6 = (V)[6]; r7 = (V)[7]; r8 = (V)[8]; r9 = (V)[9]; r10 = (V)[10];
 
-#define WL_SIG Env e, Stk sp, u32 seq, u32 rn, Term r0, Term r1, Term r2, Term r3, Term r4, Term r5, Term rp, Term r6, Term r7, Term r8, Term r9, Term r10, Term r11
+#define WL_SIG Env e, DEV Term* sp, u32 seq, u32 rn, Term r0, Term r1, Term r2, Term r3, Term r4, Term r5, Term rp, Term r6, Term r7, Term r8, Term r9, Term r10, Term r11
 
 #define WL_ALL e, sp, seq, rn, r0, r1, r2, r3, r4, r5, rp, r6, r7, r8, r9, r10, r11
 
@@ -541,21 +502,19 @@ CONSTV u8 CID_HOT_T[] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 
 
 #define TAB_AT(T, S, I) T[S < I ? S : I]
 
-#define fid_arity(x) ((u32)FID_ARITY_T[x])
-
-#define fid_bangs(x) ((bool)(FID_FLAG_T[x] & 1))
-
-#define fid_nofk(x) ((bool)(FID_FLAG_T[x] & 2))
-
-#define fid_seqk(x) (fid_resw(x) != 0)
-
-#define fid_resw(x) ((u32)FID_RESW_T[x])
-
-#define cid_arity(x) ((u32)CID_ARITY_T[x])
-#define cid_hot(x) ((bool)CID_HOT_T[x])
+#define fid_arity(x) ((u32)FID_T[x][0])
+#define fid_resw(x)  ((u32)FID_T[x][1])
+#define fid_bangs(x) ((bool)(FID_T[x][2] & 1))
+#define fid_nofk(x)  ((bool)(FID_T[x][2] & 2))
+#define cid_arity(x) ((u32)CID_T[x][0])
+#define cid_hot(x)   ((bool)CID_T[x][1])
 
 // A32
 // ===
+
+// C11's atomics on every lane; a device FENCE releases or acquires.
+// Metal's a32_load reads through a volatile local, or the M1 pipeline
+// build dies. A weak CAS may fail with the cell still x: a32_cmpx loops.
 
 #define A32_LOOP(k, x) \
   INLINE u32 a32_##k(DEV u32* p, u32 v) { \
@@ -567,31 +526,34 @@ CONSTV u8 CID_HOT_T[] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 
 
 #ifdef __METAL_VERSION__
 
-// through a volatile local, or the M1 pipeline build dies
-#define a32_load(p)      \
+INLINE DEV atomic_uint* A32(DEV u32* p) {
+  return (DEV atomic_uint*)p;
+}
+
+INLINE TG atomic_uint* A32(TG u32* p) {
+  return (TG atomic_uint*)p;
+}
+
+#define a32_load(p) \
   ({ volatile thread u32 _a32v = atomic_load_explicit(A32(p), RLX); _a32v; })
-#define a32_store(p, v)  atomic_store_explicit(A32(p), v, RLX)
-#define a32_add(p, v) atomic_fetch_add_explicit(A32(p), v, RLX)
-#define a32_sub(p, v) atomic_fetch_sub_explicit(A32(p), v, RLX)
-#define a32_and(p, v) atomic_fetch_and_explicit(A32(p), v, RLX)
-#define a32_or(p, v) atomic_fetch_or_explicit(A32(p), v, RLX)
-#define a32_xor(p, v) atomic_fetch_xor_explicit(A32(p), v, RLX)
-#define a32_min(p, v) atomic_fetch_min_explicit(A32(p), v, RLX)
-#define a32_max(p, v) atomic_fetch_max_explicit(A32(p), v, RLX)
-#define a32_swp(p, e, v) \
-  atomic_compare_exchange_weak_explicit(A32(p), e, v, RLX, RLX)
 
-#elif defined(BEND_RTC)
+#else
 
-#define a32_load(p)     (*(volatile u32*)(p))
-#define a32_store(p, v) (*(volatile u32*)(p) = (v))
-#define a32_add(p, v) atomicAdd((u32*)(p), v)
-#define a32_sub(p, v) atomicSub((u32*)(p), v)
-#define a32_and(p, v) atomicAnd((u32*)(p), v)
-#define a32_or(p, v) atomicOr((u32*)(p), v)
-#define a32_xor(p, v) atomicXor((u32*)(p), v)
-#define a32_min(p, v) atomicMin((u32*)(p), v)
-#define a32_max(p, v) atomicMax((u32*)(p), v)
+#define a32_load(p) atomic_load_explicit(A32(p), RLX)
+
+#ifdef BEND_RTC
+
+#define A32(p) (p)
+#define atomic_load_explicit(p, o)     (*(volatile u32*)(p))
+#define atomic_store_explicit(p, v, o) (*(volatile u32*)(p) = (v))
+#define atomic_fetch_add_explicit(p, v, o) atomicAdd((u32*)(p), v)
+#define atomic_fetch_sub_explicit(p, v, o) atomicSub((u32*)(p), v)
+#define atomic_fetch_and_explicit(p, v, o) atomicAnd((u32*)(p), v)
+#define atomic_fetch_or_explicit(p, v, o) atomicOr((u32*)(p), v)
+#define atomic_fetch_xor_explicit(p, v, o) atomicXor((u32*)(p), v)
+#define atomic_fetch_min_explicit(p, v, o) atomicMin((u32*)(p), v)
+#define atomic_fetch_max_explicit(p, v, o) atomicMax((u32*)(p), v)
+#define atomic_compare_exchange_weak_explicit(p, e, v, s, f) a32_swp(p, e, v)
 
 INLINE bool a32_swp(DEV u32* p, u32* e, u32 v) {
   u32 x = *e;
@@ -599,61 +561,57 @@ INLINE bool a32_swp(DEV u32* p, u32* e, u32 v) {
   return *e == x;
 }
 
+#else
+
+#define A32(p) ((_Atomic u32*)(p))
+#define atomic_fetch_min_explicit __c11_atomic_fetch_min
+#define atomic_fetch_max_explicit __c11_atomic_fetch_max
+
 #endif
 
+#endif
+
+#define RLX memory_order_relaxed
+
 #if DEVICE
+#define REL RLX
+#define ACQ RLX
+#define ACR RLX
+#define a32_acq(p) FENCE()
+#else
+#define REL memory_order_release
+#define ACQ memory_order_acquire
+#define ACR memory_order_acq_rel
+#define a32_acq(p) ((void)a32_load_acq(p))
+#endif
 
-INLINE u32 a32_sub_rel(DEV u32* p, u32 v) {
-  FENCE();
-  return a32_sub(p, v);
-}
-
-INLINE void a32_store_rel(DEV u32* p, u32 v) {
-  FENCE();
-  a32_store(p, v);
-}
+#define a32_store(p, v)     atomic_store_explicit(A32(p), v, RLX)
+#define a32_add(p, v) atomic_fetch_add_explicit(A32(p), v, RLX)
+#define a32_sub(p, v) atomic_fetch_sub_explicit(A32(p), v, RLX)
+#define a32_and(p, v) atomic_fetch_and_explicit(A32(p), v, RLX)
+#define a32_or(p, v) atomic_fetch_or_explicit(A32(p), v, RLX)
+#define a32_xor(p, v) atomic_fetch_xor_explicit(A32(p), v, RLX)
+#define a32_min(p, v) atomic_fetch_min_explicit(A32(p), v, RLX)
+#define a32_max(p, v) atomic_fetch_max_explicit(A32(p), v, RLX)
+#define a32_sub_rel(p, v)   (FENCE(), atomic_fetch_sub_explicit(A32(p), v, REL))
+#define a32_store_rel(p, v) (FENCE(), atomic_store_explicit(A32(p), v, REL))
+#define a32_at(H, word)     ((DEV u32*)&(H)[word])
 
 INLINE u32 a32_load_acq(DEV u32* p) {
-  u32 v = a32_load(p);
+  u32 v = atomic_load_explicit(A32(p), ACQ);
   FENCE();
   return v;
 }
 
-#define a32_acq(p) FENCE()
-
 INLINE bool a32_cas(DEV u32* p, THR u32* e, u32 v) {
   FENCE();
-  bool ok = a32_swp(p, e, v);
+  bool ok = atomic_compare_exchange_weak_explicit(A32(p), e, v, ACR, ACQ);
   FENCE();
   return ok;
 }
 
-#else
-
-#define a32_load(p)         __atomic_load_n(p, __ATOMIC_RELAXED)
-#define a32_store(p, v)     __atomic_store_n(p, v, __ATOMIC_RELAXED)
-#define a32_add(p, v) __atomic_fetch_add(p, v, __ATOMIC_RELAXED)
-#define a32_sub(p, v) __atomic_fetch_sub(p, v, __ATOMIC_RELAXED)
-#define a32_and(p, v) __atomic_fetch_and(p, v, __ATOMIC_RELAXED)
-#define a32_or(p, v) __atomic_fetch_or(p, v, __ATOMIC_RELAXED)
-#define a32_xor(p, v) __atomic_fetch_xor(p, v, __ATOMIC_RELAXED)
-#define a32_min(p, v) __atomic_fetch_min(p, v, __ATOMIC_RELAXED)
-#define a32_max(p, v) __atomic_fetch_max(p, v, __ATOMIC_RELAXED)
-#define a32_sub_rel(p, v)   __atomic_fetch_sub(p, v, __ATOMIC_RELEASE)
-#define a32_store_rel(p, v) __atomic_store_n(p, v, __ATOMIC_RELEASE)
-#define a32_load_acq(p)     __atomic_load_n(p, __ATOMIC_ACQUIRE)
-#define a32_acq(p)          ((void)a32_load_acq(p))
-
-INLINE bool a32_cas(u32* p, u32* e, u32 v) {
-  return __atomic_compare_exchange_n(
-    p, e, v, 1, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
-}
-
-#endif
-
 A32_LOOP(exch, v)
 
-// a weak CAS may fail with the cell still x
 INLINE u32 a32_cmpx(DEV u32* p, u32 x, u32 v) {
   u32 o = x;
   while (!a32_cas(p, &o, v) && o == x) {
@@ -661,16 +619,13 @@ INLINE u32 a32_cmpx(DEV u32* p, u32 x, u32 v) {
   return o;
 }
 
-#define a32_at(H, word) ((DEV u32*)&(H)[word])
-
 // Err
 // ===
 
 #if DEVICE
 
-INLINE void err_post(Corpus H, Err code) {
-  u32 seen = 0;
-  while (seen == 0 && !a32_cas(a32_at(H, H_ERROR_CODE), &seen, code)) {}
+INLINE void err_post(DEV u64* H, u32 code) {
+  a32_cmpx(a32_at(H, H_ERROR_CODE), 0, code);
 }
 
 #else
@@ -691,7 +646,7 @@ static void err_fail(const char* msg) {
   _exit(1);
 }
 
-static void err_post(Corpus H, Err code) {
+static void err_post(u64* H, u32 code) {
   err_fail(ERR_TEXT[code]);
 }
 
@@ -705,7 +660,6 @@ static void err_trap(int sig) {
 #define err_spun(H, n) ((++*(n) & 4095) == 0 && err_seen(H))
 
 #ifdef __METAL_VERSION__
-// Metal's atan2 is NaN at the origin; libm answers +-0 or +-pi there
 INLINE f32 atan2_c99(f32 y, f32 x) {
   return y == 0.0f && x == x
     ? copysign(signbit(x) ? M_PI_F : 0.0f, y) : atan2(y, x);
@@ -725,8 +679,6 @@ INLINE f32 atan2_c99(f32 y, f32 x) {
 
 #define U32_BIN(a, o, b) ((u64)((u32)(a) o (u32)(b)))
 
-// Metal folds a constant dividend within 128 of 2^32 through an f32: divide
-// its half, then fix the odd bit.
 #define U32_QUO(a, b) \
   ((a) / 2 / (b) * 2 + ((a) - (a) / 2 / (b) * 2 * (b) >= (b)))
 
@@ -740,12 +692,12 @@ INLINE u64 f32_rewrap(f32 x) {
   return p.u;
 }
 
-INLINE U32 f32_to_u32(U32 a) {
+INLINE u64 f32_to_u32(u64 a) {
   f32 v = f32_unbox(a);
   return v >= 0.0f && v < 4294967296.0f ? (u32)v : 0;
 }
 
-INLINE Nat nat_chk(Env e, Nat n) {
+INLINE u64 nat_chk(Env e, u64 n) {
   if (n > NAT_IMM) {
     err_post(e.mem, ERR_NATS);
     return NAT_IMM;
@@ -753,7 +705,7 @@ INLINE Nat nat_chk(Env e, Nat n) {
   return n;
 }
 
-INLINE Nat nat_mul(Env e, Nat a, Nat b) {
+INLINE u64 nat_mul(Env e, u64 a, u64 b) {
   return nat_chk(e, b != 0 && a > NAT_IMM / b ? NAT_IMM + 1 : a * b);
 }
 
@@ -779,9 +731,9 @@ A32_LOOP(fadd, f32_rewrap(f32_unbox(o) + f32_unbox(v)))
 
 #define bank_at(H, c) ((DEV Bank*)((H) + H_BANK) + (c))
 
-INLINE Loc bank_pop(Corpus H, Cls c) {
+INLINE u64 bank_pop(DEV u64* H, u32 c) {
   DEV Bank* b = bank_at(H, c);
-  Loc got = 0;
+  u64 got = 0;
   LOCK(bank_lock);
   u32 t = a32_sub(&b->rd, 1);
   if ((int)t > 0) {
@@ -796,7 +748,7 @@ INLINE Loc bank_pop(Corpus H, Cls c) {
   return got;
 }
 
-INLINE void bank_push(Corpus H, Cls c, Loc head) {
+INLINE void bank_push(DEV u64* H, u32 c, u64 head) {
   DEV Bank* b = bank_at(H, c);
   LOCK(bank_lock);
   H[b->off + a32_add(&b->wr, 1)] = head;
@@ -816,16 +768,16 @@ INLINE void bank_push(Corpus H, Cls c, Loc head) {
 // kernel end (dev_cut). The bump grows only when all of these are empty.
 
 #define ALC_AT(e, i)   (e).alc[(i) * LANE_STEP]
-#define ALC_LEN(e, c)  ALC_AT(e, ALC_WORDS + (c))
-#define ALC_COLD(e, c) ALC_AT(e, 2 * ALC_WORDS + (c))
+#define ALC_LEN(e, c)  ALC_AT(e, NCLS_ALL + (c))
+#define ALC_COLD(e, c) ALC_AT(e, 2 * NCLS_ALL + (c))
 #define KEEP(c)        (KEEP_WORDS >> (c) ? KEEP_WORDS >> (c) : 1)
 
-INLINE Cls cls_fit(u32 words) {
+INLINE u32 cls_fit(u32 words) {
   return words > 1 ? 32 - CLZ(words - 1) : 0;
 }
 
-OUTLINE void heap_hand(Env e, Cls cls) {
-  Loc cold = ALC_COLD(e, cls);
+OUTLINE void heap_hand(Env e, u32 cls) {
+  u64 cold = ALC_COLD(e, cls);
   if (cold) {
     bank_push(e.mem, cls, cold);
   }
@@ -837,12 +789,12 @@ OUTLINE void heap_hand(Env e, Cls cls) {
 #if DEVICE
 #define corpus_grow(H, n) false
 #else
-static bool corpus_grow(Corpus H, u64 need);
+static bool corpus_grow(u64* H, u64 need);
 #endif
 
-OUTLINE Loc heap_alloc_miss(Env e, Cls cls) {
-  Corpus H = e.mem;
-  Loc  got = 0;
+OUTLINE u64 heap_alloc_miss(Env e, u32 cls) {
+  DEV u64* H = e.mem;
+  u64  got = 0;
   if (!DEVICE) {
     got = ALC_COLD(e, cls);
     ALC_COLD(e, cls) = 0;
@@ -869,8 +821,8 @@ OUTLINE Loc heap_alloc_miss(Env e, Cls cls) {
   return got;
 }
 
-INLINE Loc heap_alloc(Env e, Cls cls) {
-  Loc h = ALC_AT(e, cls);
+INLINE u64 heap_alloc(Env e, u32 cls) {
+  u64 h = ALC_AT(e, cls);
   if (h) {
     ALC_AT(e, cls)   = e.mem[h];
     ALC_LEN(e, cls) -= 1ull << cls;
@@ -879,7 +831,7 @@ INLINE Loc heap_alloc(Env e, Cls cls) {
   return heap_alloc_miss(e, cls);
 }
 
-INLINE void heap_free(Env e, Cls cls, Loc loc) {
+INLINE void heap_free(Env e, u32 cls, u64 loc) {
   if (err_seen(e.mem)) {
     return;
   }
@@ -891,7 +843,7 @@ INLINE void heap_free(Env e, Cls cls, Loc loc) {
   }
 }
 
-INLINE void spare_free(Env e, Cls cls, Loc loc) {
+INLINE void spare_free(Env e, u32 cls, u64 loc) {
   if (loc >= HEAP_OFF) {
     heap_free(e, cls, loc);
   }
@@ -899,6 +851,10 @@ INLINE void spare_free(Env e, Cls cls, Loc loc) {
 
 // Term
 // ====
+
+// A static node (below the heap) is trivial, as is a captureless
+// closure. A fork's Array handle (BLK_SHR: an Array binder is hot)
+// is a redirect: loaded plainly, copied and dropped by a match.
 
 #define term_make(tag, aux, loc) \
   (((u64)(tag) << 56) | ((u64)(aux) << 40) | (u64)(loc))
@@ -909,7 +865,7 @@ INLINE void spare_free(Env e, Cls cls, Loc loc) {
 #define term_buf(cls, loc) term_make(TAG_BUF, cls, loc)
 #define term_tsk(fid, loc) term_make(TAG_TSK, fid, loc)
 
-INLINE Term term_blk(bool arr, Cls cls, Loc loc) {
+INLINE Term term_blk(bool arr, u32 cls, u64 loc) {
   return term_buf(cls, loc) | ((u64)arr << 57);
 }
 
@@ -925,11 +881,10 @@ INLINE u64 term_aux(Term t) {
   return (t >> 40) & 0xFFFF;
 }
 
-INLINE Loc term_loc(Term t) {
+INLINE u64 term_loc(Term t) {
   return t & LOC_MASK;
 }
 
-// A static node (below the heap) is trivial, as is a captureless closure.
 INLINE bool term_triv(Term t) {
   return term_tag(t) <= TAG_PAK || t == TERM_HOLE || term_loc(t) < HEAP_OFF;
 }
@@ -939,7 +894,7 @@ OUTLINE Term rfc_wrap(Env e, Term t, u32 cnt) {
     err_post(e.mem, ERR_RFCS);
     return t;
   }
-  Loc r = heap_alloc(e, 0);
+  u64 r = heap_alloc(e, 0);
   e.mem[r] = ((u64)term_loc(t) << 24) | cnt;
   return (t & ~LOC_MASK) | RFC_BIT | r;
 }
@@ -951,8 +906,11 @@ INLINE Term rfc_seal(Env e, Term t) {
   return rfc_wrap(e, t, 1);
 }
 
-INLINE u64 rfc_view(Env e, Loc r) {
-  DEV u32* w = a32_at(e.mem, r);
+// A redirect cell holds its target's loc over a 24-bit count, which
+// changes by atomic adds on the low half: the cell is read as two atomic
+// halves, never as one plain word.
+INLINE u64 rfc_view(DEV u64* H, u64 r) {
+  DEV u32* w = a32_at(H, r);
   u64 cell = ((u64)a32_load(w + 1) << 32) | a32_load(w);
   if ((cell & RFC_CNT) == 1) {
     a32_acq(w);
@@ -960,58 +918,56 @@ INLINE u64 rfc_view(Env e, Loc r) {
   return cell;
 }
 
-INLINE void rfc_bump(Env e, Loc r, u32 k) {
+INLINE void rfc_bump(Env e, u64 r, u32 k) {
   u32 c = a32_add(a32_at(e.mem, r), k);
   if ((c & RFC_CNT) >= RFC_CNT - k) {
     err_post(e.mem, ERR_RFCS);
   }
 }
 
-INLINE Term term_keep(Env e, Term t) {
+INLINE Term term_keep(Env e, Term t, u32 k) {
   if (term_rfc(t)) {
-    rfc_bump(e, term_loc(t), 1);
+    rfc_bump(e, term_loc(t), k);
     return t;
   }
   if (term_triv(t)) {
     return t;
   }
-  return rfc_wrap(e, t, 2);
+  return rfc_wrap(e, t, 1 + k);
 }
 
-INLINE Loc term_peek(Env e, Term t) {
+INLINE u64 term_peek(DEV u64* H, Term t) {
   if (term_rfc(t)) {
-    return rfc_view(e, term_loc(t)) >> 24;
+    return rfc_view(H, term_loc(t)) >> 24;
   }
   return term_loc(t);
 }
 
-// A fork's handle (BLK_SHR: an Array binder is hot) is a redirect: loaded
-// plainly, copied and dropped by a match.
 #define blk_shr(t) (BLK_SHR && term_rfc(t))
 
-INLINE Loc blk_loc(Corpus H, Term a) {
-  return blk_shr(a) ? H[term_loc(a)] >> 24 : term_loc(a);
+INLINE u64 blk_loc(DEV u64* H, Term a) {
+  return BLK_SHR ? term_peek(H, a) : term_loc(a);
 }
 
-INLINE Cls blk_cls(Term t) {
+INLINE u32 blk_cls(Term t) {
   return (u32)term_aux(t) & 31;
 }
 
 #define buf_wcls(c) ((c) == 0 ? 0 : (c) - 1)
 
-INLINE Cls blk_span(Term t) {
-  Cls c = blk_cls(t);
+INLINE u32 blk_span(Term t) {
+  u32 c = blk_cls(t);
   return term_tag(t) == TAG_ARR ? c : buf_wcls(c);
 }
 
 FAR void term_drop(Env e, Term t) {
-  Corpus H = e.mem;
+  DEV u64* H = e.mem;
   u64  cur = 0;
   Term c0  = 0;
   u32  step = 0;
   for (;;) {
     if (!term_triv(t) && term_rfc(t)) {
-      Loc      r = term_loc(t);
+      u64      r = term_loc(t);
       DEV u32* p = a32_at(H, r);
       if ((a32_sub_rel(p, 1) & RFC_CNT) != 1) {
         t = 0;
@@ -1027,11 +983,11 @@ FAR void term_drop(Env e, Term t) {
         heap_free(e, blk_span(t), term_loc(t));
       } else {
         u32 aux = (u32)term_aux(t);
-        Loc loc = term_loc(t);
-        // an array's cells count by its class; a task holds two more words
+        u64 loc = term_loc(t);
         u32 n   = tag == TAG_ARR ? 0 : tag == TAG_CTR ? cid_arity(aux)
           : fid_arity(aux) - (tag == TAG_CLO);
-        Cls cls = tag == TAG_ARR ? 64 | blk_cls(t)
+        u32 cls = tag == TAG_ARR ? 64 | blk_cls(t)
+          : n > 247 ? 64 | (n - 240)
           : cls_fit(tag == TAG_TSK ? n + 2 : n);
         c0 = H[loc];
         H[loc] = cur;
@@ -1045,10 +1001,10 @@ FAR void term_drop(Env e, Term t) {
       if (cur == 0) {
         return;
       }
-      Loc  loc = cur & LOC_MASK;
+      u64  loc = cur & LOC_MASK;
       u32  i   = (u8)(cur >> 40);
       u32  n   = (u8)(cur >> 48);
-      Cls  cls = (u32)(cur >> 56);
+      u32  cls = (u32)(cur >> 56);
       bool arr = cls > 63;
       u32  j   = i;
       if (arr) {
@@ -1085,7 +1041,7 @@ INLINE void term_sink(Env e, Term t) {
   }
 }
 
-OUTLINE void span_fade(Env e, Term t, Loc src, u32 n) {
+OUTLINE void span_fade(Env e, Term t, u64 src, u32 n) {
   for (u32 j = 0; j < n; j += 1) {
     Term f = e.mem[src + j];
     if (term_rfc(f)) {
@@ -1097,17 +1053,17 @@ OUTLINE void span_fade(Env e, Term t, Loc src, u32 n) {
   term_drop(e, t);
 }
 
-INLINE Loc ctr_take(Env e, Term t, u32 n, THR Term* out) {
-  Corpus H = e.mem;
+INLINE u64 ctr_take(Env e, Term t, u32 n, THR Term* out) {
+  DEV u64* H = e.mem;
   if (!term_rfc(t)) {
     for (u32 j = 0; j < n; j += 1) {
       out[j] = H[term_loc(t) + j];
     }
     return term_loc(t);
   }
-  Loc r    = term_loc(t);
-  u64 cell = rfc_view(e, r);
-  Loc src  = cell >> 24;
+  u64 r    = term_loc(t);
+  u64 cell = rfc_view(H, r);
+  u64 src  = cell >> 24;
   for (u32 j = 0; j < n; j += 1) {
     out[j] = H[src + j];
   }
@@ -1123,7 +1079,7 @@ INLINE Term term_word(Env e, Term w) {
   u32 x = 0;
   Term t = w;
   for (u32 i = 0; i < 32 && term_aux(t) == CID_WCON; i += 1) {
-    Loc l = term_peek(e, t);
+    u64 l = term_peek(e.mem, t);
     x |= (u32)(e.mem[l] & 1) << i;
     t = e.mem[l + 1];
   }
@@ -1139,23 +1095,23 @@ INLINE Term term_word(Env e, Term w) {
 // ANode{l, r} is blk_node; Array.clone is blk_copy.
 
 #define BLK_ALLOC(n, w) \
-  Loc n = heap_alloc(e, w); \
+  u64 n = heap_alloc(e, w); \
   if (err_seen(e.mem)) { \
     return term_buf(0, n); \
   }
 
-INLINE DEV u32a* blk_ptr(Corpus H, Loc loc, u32 i) {
+INLINE DEV u32a* blk_ptr(DEV u64* H, u64 loc, u32 i) {
   return (DEV u32a*)(H + loc) + i;
 }
 
-INLINE Term blk_read(Corpus H, bool arr, Loc loc, u32 i) {
+INLINE Term blk_read(DEV u64* H, bool arr, u64 loc, u32 i) {
   if (arr) {
     return H[loc + i];
   }
   return (u64)*blk_ptr(H, loc, i);
 }
 
-INLINE void blk_write(Corpus H, bool arr, Loc loc, u32 i, Term v) {
+INLINE void blk_write(DEV u64* H, bool arr, u64 loc, u32 i, Term v) {
   if (arr) {
     H[loc + i] = v;
   } else {
@@ -1163,20 +1119,20 @@ INLINE void blk_write(Corpus H, bool arr, Loc loc, u32 i, Term v) {
   }
 }
 
-INLINE u32 blk_at(Term a, U32 i, u32 lgs) {
+INLINE u32 blk_at(Term a, u64 i, u32 lgs) {
   return ((u32)i & (u32)((1ull << (blk_cls(a) - lgs)) - 1)) << lgs;
 }
 
-INLINE Term blk_keep(Env e, Loc at) {
+INLINE Term blk_keep(Env e, u64 at) {
   Term w = e.mem[at];
-  Term v = term_keep(e, w);
+  Term v = term_keep(e, w, 1);
   if (v != w) {
     e.mem[at] = v;
   }
   return v;
 }
 
-INLINE void blk_fill(Env e, Loc dst, Loc src, u64 n, bool keep) {
+INLINE void blk_fill(Env e, u64 dst, u64 src, u64 n, bool keep) {
   for (u64 j = 0; j < n; j += 1) {
     e.mem[dst + j] = keep ? blk_keep(e, src + j) : e.mem[src + j];
   }
@@ -1188,22 +1144,22 @@ INLINE void blk_free(Env e, Term t) {
 
 OUTLINE Term blk_copy(Env e, Term a) {
   bool arr = term_tag(a) == TAG_ARR;
-  Cls cls = blk_span(a);
+  u32 cls = blk_span(a);
   BLK_ALLOC(dst, cls)
   blk_fill(e, dst, blk_loc(e.mem, a), 1ull << cls, arr);
   return term_blk(arr, blk_cls(a), dst);
 }
 
 INLINE Term blk_node(Env e, Term l, Term r) {
-  Corpus H = e.mem;
+  DEV u64* H = e.mem;
   bool arr = term_tag(l) == TAG_ARR;
-  Cls c = blk_cls(l);
+  u32 c = blk_cls(l);
   if (c != blk_cls(r) || c + 1 >= NCLS_ALL) {
     err_post(H, ERR_TAGS);
     return l;
   }
-  Loc pl = blk_loc(H, l);
-  Loc pr = blk_loc(H, r);
+  u64 pl = blk_loc(H, l);
+  u64 pr = blk_loc(H, r);
   BLK_ALLOC(n, arr ? c + 1 : c)
   if (!arr && c == 0) {
     H[n] = (u64)*blk_ptr(H, pl, 0) | ((u64)*blk_ptr(H, pr, 0) << 32);
@@ -1218,16 +1174,16 @@ INLINE Term blk_node(Env e, Term l, Term r) {
 }
 
 INLINE Term blk_half(Env e, Term a, u32 hi) {
-  Corpus H = e.mem;
+  DEV u64* H = e.mem;
   bool arr = term_tag(a) == TAG_ARR;
-  Cls c = blk_cls(a);
+  u32 c = blk_cls(a);
   if (c == 0) {
     err_post(H, ERR_TAGS);
     return a;
   }
   c -= 1;
-  Cls cw = arr ? c : buf_wcls(c);
-  Loc src = blk_loc(H, a);
+  u32 cw = arr ? c : buf_wcls(c);
+  u64 src = blk_loc(H, a);
   BLK_ALLOC(n, cw)
   if (!arr && c == 0) {
     H[n] = (u64)*blk_ptr(H, src, hi);
@@ -1240,26 +1196,19 @@ INLINE Term blk_half(Env e, Term a, u32 hi) {
   return term_blk(arr, c, n);
 }
 
-INLINE Term blk_new(Env e, bool arr, Nat d, u32 lgs, u32 n, THR Term* v) {
-  Corpus H = e.mem;
+INLINE Term blk_new(Env e, bool arr, u64 d, u32 lgs, u32 n, THR Term* v) {
+  DEV u64* H = e.mem;
   if (d + lgs > 31) {
     err_post(H, ERR_ARRS);
     d = 0;
   }
-  Cls c = (u32)d + lgs;
+  u32 c = (u32)d + lgs;
   BLK_ALLOC(l, arr ? c : buf_wcls(c))
-  for (u32 j = 0; j < n; j += 1) {
-    Term w = v[j];
-    if (arr && d > 0 && !term_triv(w)) {
-      if (d >= 24) {
-        err_post(H, ERR_RFCS);
-      } else if (term_rfc(w)) {
-        rfc_bump(e, term_loc(w), (1u << d) - 1);
-      } else {
-        w = rfc_wrap(e, w, 1u << d);
-      }
+  for (u32 j = 0; arr && d > 0 && j < n; j += 1) {
+    if (d >= 24 && !term_triv(v[j])) {
+      err_post(H, ERR_RFCS);
     }
-    v[j] = w;
+    v[j] = term_keep(e, v[j], (1u << d) - 1);
   }
   for (u64 i = 0; i < (1ull << c); i += 1) {
     blk_write(H, arr, l, (u32)i, i % (1u << lgs) < n ? v[i % (1u << lgs)] : 0);
@@ -1280,7 +1229,7 @@ INLINE u32 ring_lap(u32 pos) {
   return ~(u32)(pos / RING_LEN) & 1;
 }
 
-INLINE void ring_push(Corpus H, Ring r, Term tsk) {
+INLINE void ring_push(DEV u64* H, u32 r, Term tsk) {
   u32 pos = a32_add(ring_put(H, r), 1);
   if (pos - a32_load(ring_get(H, r)) >= RING_LEN) {
     err_post(H, ERR_RING);
@@ -1291,18 +1240,18 @@ INLINE void ring_push(Corpus H, Ring r, Term tsk) {
   a32_store_rel(lo + 1, (u32)(tsk >> 32) | (ring_lap(pos) << 31));
 }
 
-INLINE Ring ring_flip(u32 i) {
+INLINE u32 ring_flip(u32 i) {
   return (i % CUBE_T << CUBE_LOG) + i / CUBE_T;
 }
 
-#define ring_pick(b, s, c) ((b) + (s) * (g32_add(c, 1) & (CUBE_T - 1)))
+#define ring_pick(b, s, c) ((b) + (s) * (a32_add(c, 1) & (CUBE_T - 1)))
 
 // Task
 // ====
 
-INLINE Loc task_node(Env e, Fid fid, Term cont, u32 idx, u32 rem) {
+INLINE u64 task_node(Env e, u32 fid, Term cont, u32 idx, u32 rem) {
   u32 ar  = fid_arity(fid);
-  Loc loc = heap_alloc(e, cls_fit(ar + 2));
+  u64 loc = heap_alloc(e, cls_fit(ar + 2));
   for (u32 i = 0; rem && i < ar; i += 1) {
     e.mem[loc + i] = TERM_HOLE;
   }
@@ -1311,12 +1260,12 @@ INLINE Loc task_node(Env e, Fid fid, Term cont, u32 idx, u32 rem) {
   return loc;
 }
 
-INLINE Loc task_tail(Term t) {
+INLINE u64 task_tail(Term t) {
   return term_loc(t) + fid_arity((u32)term_aux(t));
 }
 
-INLINE Term task_deliver(Corpus H, Term cont, u32 idx, THR Term* v, u32 n) {
-  Loc at = cont == TERM_HOLE ? H_ROOT_WORD : term_loc(cont) + idx;
+INLINE Term task_deliver(DEV u64* H, Term cont, u32 idx, THR Term* v, u32 n) {
+  u64 at = cont == TERM_HOLE ? H_ROOT_WORD : term_loc(cont) + idx;
   for (u32 j = 0; j < WL_RESW; j += 1) {
     if (j < n) {
       H[at + j] = v[j];
@@ -1326,7 +1275,7 @@ INLINE Term task_deliver(Corpus H, Term cont, u32 idx, THR Term* v, u32 n) {
     a32_store_rel(a32_at(H, H_ROOT_DONE), n + 1);
     return 0;
   }
-  Loc tl = task_tail(cont);
+  u64 tl = task_tail(cont);
   if (a32_sub_rel(a32_at(H, tl + 1), 1) == 1) {
     a32_acq(a32_at(H, tl + 1));
     return cont;
@@ -1334,8 +1283,8 @@ INLINE Term task_deliver(Corpus H, Term cont, u32 idx, THR Term* v, u32 n) {
   return 0;
 }
 
-INLINE void task_deal(Corpus H, Term join, u32 base, u32 stride, Cur cur) {
-  Loc loc = term_loc(join);
+INLINE void task_deal(DEV u64* H, Term join, u32 base, u32 stride, TG u32* cur) {
+  u64 loc = term_loc(join);
   u32 ar  = fid_arity((u32)term_aux(join));
   u32 g   = 0;
   if (stride == 0) {
@@ -1346,7 +1295,7 @@ INLINE void task_deal(Corpus H, Term join, u32 base, u32 stride, Cur cur) {
     Term k = H[loc + i];
     if (term_tag(k) == TAG_TSK) {
       H[loc + i] = TERM_HOLE;
-      Ring to;
+      u32 to;
       if (stride != 0) {
         to = ring_pick(base, stride, cur);
       } else {
@@ -1361,11 +1310,11 @@ INLINE void task_deal(Corpus H, Term join, u32 base, u32 stride, Cur cur) {
 // Root
 // ====
 
-INLINE bool root_done(Corpus H) {
+INLINE bool root_done(DEV u64* H) {
   return a32_load_acq(a32_at(H, H_ROOT_DONE)) != 0;
 }
 
-static u32 root_take(Corpus H, THR Term* v) {
+static u32 root_take(DEV u64* H, THR Term* v) {
   u32 n = a32_load_acq(a32_at(H, H_ROOT_DONE)) - 1;
   for (u32 j = 0; j < n; j += 1) {
     v[j] = H[H_ROOT_WORD + j];
@@ -3537,10 +3486,10 @@ INLINE Term spin_50(Env e, THR Term* o, Term r0, Term r1, Term r2) {
     if (term_aux(_hs_0) == CID_NIL) {
       _v_2 = 0;
     } else {
-      u64 _sp_0 = term_peek(e, _hs_0);
+      u64 _sp_0 = term_peek(e.mem, _hs_0);
       Term _f_0 = e.mem[_sp_0 + 0];
       Term _f_1 = e.mem[_sp_0 + 1];
-      u64 _sp_1 = term_peek(e, _f_0);
+      u64 _sp_1 = term_peek(e.mem, _f_0);
       Term _f_2 = e.mem[_sp_1 + 0];
       Term _f_3 = e.mem[_sp_1 + 1];
       u32 _v_3 = 0;
@@ -9370,7 +9319,7 @@ INLINE Term spin_157(Env e, THR Term* o, Term r0) {
 #define WL_SPUN
 #define WL_AGAIN(F) __attribute__((musttail)) return WL_##F(WL_ALL)
 
-typedef Reply (PRESERVE(preserve_none) *WlFn)(WL_SIG);
+typedef Term (PRESERVE(preserve_none) *WlFn)(WL_SIG);
 #define WL_X(F) WL_FN WL_##F(WL_SIG);
 WL_TABLE WL_X(FID_ENTER)
 #undef WL_X
@@ -9379,12 +9328,12 @@ static const WlFn wl_tab[] = { WL_TABLE };
 #undef WL_X
 #endif
 
-static Reply work_loop(Env e, Stk sp, Term t, u32 seq) {
+static Term work_loop(Env e, DEV Term* sp, Term t, u32 seq) {
   WL_BANK
   u32 rn = 0;
   r0 = t;
 #if DEVICE
-  Fid fid   = FID_ENTER;
+  u32 fid   = FID_ENTER;
   u32 wpoll = 0;
   for (;;) {
   if (err_spun(e.mem, &wpoll)) {
@@ -9398,6 +9347,9 @@ static Reply work_loop(Env e, Stk sp, Term t, u32 seq) {
 
 // Segments
 // ========
+
+// A task enters through its words: a continuation's results ride r0..
+// and its parameters the stack; any other segment's parameters ride r0..
 
 #if !DEVICE
   WL_CASE(FID_SCORE_FRAC)
@@ -9791,10 +9743,10 @@ static Reply work_loop(Env e, Stk sp, Term t, u32 seq) {
   WL_CASE(FID_SCORE_IDF_GO_K47)
   {
     WL_POPN(1);
-    Term _h_1 = STK(0);
-    Term _h_2 = r0;
+    Term _h_2 = STK(0);
+    Term _h_1 = r0;
     WL_OPEN
-    r0 = (_h_1 < _h_2 ? 0 : _h_1 - _h_2);
+    r0 = (_h_2 < _h_1 ? 0 : _h_2 - _h_1);
     WL_RETN(1);
   }}
 #endif
@@ -10208,7 +10160,7 @@ static Reply work_loop(Env e, Stk sp, Term t, u32 seq) {
       r0 = 0;
       WL_RETN(1);
     } else {
-      u64 _sp_0 = term_peek(e, _xs_0);
+      u64 _sp_0 = term_peek(e.mem, _xs_0);
       Term _f_0 = e.mem[_sp_0 + 0];
       Term _f_1 = e.mem[_sp_0 + 1];
       if (seq) {
@@ -11114,9 +11066,9 @@ static Reply work_loop(Env e, Stk sp, Term t, u32 seq) {
     Term _x_17 = STK(4);
     Term _x_18 = STK(5);
     Term _x_19 = STK(6);
-    Term _h_2 = STK(7);
-    Term _h_3 = STK(8);
-    Term _h_4 = r0;
+    Term _h_3 = STK(7);
+    Term _h_4 = STK(8);
+    Term _h_2 = r0;
     WL_OPEN
     Term _v_25 = 0;
     Term _v_26 = 0;
@@ -11125,7 +11077,7 @@ static Reply work_loop(Env e, Stk sp, Term t, u32 seq) {
     Term _v_29 = 0;
     Term _v_30 = 0;
     Term _o_5[2];
-    if (spin_123(e, _o_5, nat_mul(e, 90ull, _h_4)) == 0) {
+    if (spin_123(e, _o_5, nat_mul(e, 90ull, _h_2)) == 0) {
       return 0;
     }
     _v_29 = _o_5[0];
@@ -11135,7 +11087,7 @@ static Reply work_loop(Env e, Stk sp, Term t, u32 seq) {
     Term _v_31 = 0;
     Term _v_32 = 0;
     Term _o_6[2];
-    if (spin_134(e, _o_6, _h_3, _x_15, _v_27, _v_28) == 0) {
+    if (spin_134(e, _o_6, _h_4, _x_15, _v_27, _v_28) == 0) {
       return 0;
     }
     _v_31 = _o_6[0];
@@ -11145,7 +11097,7 @@ static Reply work_loop(Env e, Stk sp, Term t, u32 seq) {
     r0 = 3;
     r1 = _v_25;
     r2 = _v_26;
-    r3 = _h_2;
+    r3 = _h_3;
     r4 = _x_14;
     r5 = _pos_1;
     r6 = nat_chk(e, _x_15 + 1);
@@ -11222,8 +11174,8 @@ static Reply work_loop(Env e, Stk sp, Term t, u32 seq) {
     Term _x_30 = STK(5);
     Term _x_31 = STK(6);
     Term _v_130 = STK(7);
-    Term _h_7 = STK(8);
-    Term _h_8 = r0;
+    Term _h_8 = STK(8);
+    Term _h_7 = r0;
     WL_OPEN
     Term _v_131 = 0;
     Term _v_132 = 0;
@@ -11232,7 +11184,7 @@ static Reply work_loop(Env e, Stk sp, Term t, u32 seq) {
     Term _v_135 = 0;
     Term _v_136 = 0;
     Term _o_21[2];
-    if (spin_123(e, _o_21, nat_mul(e, 90ull, _h_8)) == 0) {
+    if (spin_123(e, _o_21, nat_mul(e, 90ull, _h_7)) == 0) {
       return 0;
     }
     _v_135 = _o_21[0];
@@ -11242,7 +11194,7 @@ static Reply work_loop(Env e, Stk sp, Term t, u32 seq) {
     Term _v_137 = 0;
     Term _v_138 = 0;
     Term _o_22[2];
-    if (spin_124(e, _o_22, _h_7, _x_29, 0, _v_133, _v_134) == 0) {
+    if (spin_124(e, _o_22, _h_8, _x_29, 0, _v_133, _v_134) == 0) {
       return 0;
     }
     _v_137 = _o_22[0];
@@ -11386,12 +11338,12 @@ static Reply work_loop(Env e, Stk sp, Term t, u32 seq) {
 #if !DEVICE
   WL_CASE(FID_RUN_C235)
   {
-    Term _x_13 = r0;
-    Term _x_14 = r1;
+    Term _x_14 = r0;
+    Term _x_13 = r1;
     WL_OPEN
     Term _v_2 = 0;
     Term _o_1[1];
-    if (spin_152(e, _o_1, 2ull, _x_13, _x_14) == 0) {
+    if (spin_152(e, _o_1, 2ull, _x_14, _x_13) == 0) {
       return 0;
     }
     _v_2 = _o_1[0];
@@ -11453,22 +11405,22 @@ static Reply work_loop(Env e, Stk sp, Term t, u32 seq) {
   WL_CASE(FID_RUN_C237)
   {
     Term _f_2 = r0;
-    Term _x_15 = r1;
-    Term _x_16 = r2;
-    Term _x_17 = r3;
-    Term _x_18 = r4;
-    Term _x_19 = r5;
-    Term _x_20 = r6;
-    Term _x_21 = r7;
-    Term _x_22 = r8;
-    Term _x_23 = r9;
-    Term _x_24 = r10;
-    Term _x_25 = r11;
+    Term _x_16 = r1;
+    Term _x_17 = r2;
+    Term _x_18 = r3;
+    Term _x_19 = r4;
+    Term _x_20 = r5;
+    Term _x_21 = r6;
+    Term _x_22 = r7;
+    Term _x_23 = r8;
+    Term _x_24 = r9;
+    Term _x_25 = r10;
+    Term _x_15 = r11;
     WL_OPEN
     Term _v_3 = 0;
     u64 _nd_3 = heap_alloc(e, cls_fit(2));
-    e.mem[_nd_3 + 0] = _x_15;
-    e.mem[_nd_3 + 1] = _x_16;
+    e.mem[_nd_3 + 0] = _x_16;
+    e.mem[_nd_3 + 1] = _x_17;
     Term _v_4 = 0;
     Term _o_10[1];
     if (spin_153(e, _o_10, term_clo(FID_STDOUT_WRITE, _nd_3)) == 0) {
@@ -11478,24 +11430,24 @@ static Reply work_loop(Env e, Stk sp, Term t, u32 seq) {
     _v_3 = _v_4;
     u64 _nd_7 = heap_alloc(e, cls_fit(9));
     e.mem[_nd_7 + 0] = _f_2;
-    e.mem[_nd_7 + 1] = _x_17;
-    e.mem[_nd_7 + 2] = _x_18;
-    e.mem[_nd_7 + 3] = _x_19;
-    e.mem[_nd_7 + 4] = _x_20;
-    e.mem[_nd_7 + 5] = _x_21;
-    e.mem[_nd_7 + 6] = _x_22;
-    e.mem[_nd_7 + 7] = _x_23;
-    e.mem[_nd_7 + 8] = _x_24;
+    e.mem[_nd_7 + 1] = _x_18;
+    e.mem[_nd_7 + 2] = _x_19;
+    e.mem[_nd_7 + 3] = _x_20;
+    e.mem[_nd_7 + 4] = _x_21;
+    e.mem[_nd_7 + 5] = _x_22;
+    e.mem[_nd_7 + 6] = _x_23;
+    e.mem[_nd_7 + 7] = _x_24;
+    e.mem[_nd_7 + 8] = _x_25;
     if (!DEVICE && !seq && fid_nofk(FID_IO_BIND)) {
       u64 _t_9 = task_node(e, FID_IO_BIND, WL_CONT, WL_IDX, 0);
       e.mem[_t_9 + 0] = _v_3;
       e.mem[_t_9 + 1] = term_clo(FID_RUN_C242, _nd_7);
-      e.mem[_t_9 + 2] = _x_25;
+      e.mem[_t_9 + 2] = _x_15;
       return term_tsk(FID_IO_BIND, _t_9);
     }
     r0 = _v_3;
     r1 = term_clo(FID_RUN_C242, _nd_7);
-    r2 = _x_25;
+    r2 = _x_15;
     WL_JMP(FID_IO_BIND);
   }}
 #endif
@@ -11607,15 +11559,15 @@ static Reply work_loop(Env e, Stk sp, Term t, u32 seq) {
   WL_CASE(FID_RUN_C242)
   {
     Term _f_7 = r0;
-    Term _x_30 = r1;
-    Term _x_31 = r2;
-    Term _x_32 = r3;
-    Term _x_33 = r4;
-    Term _x_34 = r5;
-    Term _x_35 = r6;
-    Term _x_36 = r7;
-    Term _x_37 = r8;
-    Term _x_38 = r9;
+    Term _x_31 = r1;
+    Term _x_32 = r2;
+    Term _x_33 = r3;
+    Term _x_34 = r4;
+    Term _x_35 = r5;
+    Term _x_36 = r6;
+    Term _x_37 = r7;
+    Term _x_38 = r8;
+    Term _x_30 = r9;
     WL_OPEN
     if (seq) {
       WL_ROOM(2);
@@ -11630,24 +11582,24 @@ static Reply work_loop(Env e, Stk sp, Term t, u32 seq) {
     }
     if (!DEVICE && !seq && fid_nofk(FID_FRAME)) {
       u64 _t_7 = task_node(e, FID_FRAME, WL_CONT, WL_IDX, 0);
-      e.mem[_t_7 + 0] = _x_30;
-      e.mem[_t_7 + 1] = _x_31;
-      e.mem[_t_7 + 2] = _x_32;
-      e.mem[_t_7 + 3] = _x_33;
-      e.mem[_t_7 + 4] = _x_34;
-      e.mem[_t_7 + 5] = _x_35;
-      e.mem[_t_7 + 6] = _x_36;
-      e.mem[_t_7 + 7] = _x_37;
+      e.mem[_t_7 + 0] = _x_31;
+      e.mem[_t_7 + 1] = _x_32;
+      e.mem[_t_7 + 2] = _x_33;
+      e.mem[_t_7 + 3] = _x_34;
+      e.mem[_t_7 + 4] = _x_35;
+      e.mem[_t_7 + 5] = _x_36;
+      e.mem[_t_7 + 6] = _x_37;
+      e.mem[_t_7 + 7] = _x_38;
       return term_tsk(FID_FRAME, _t_7);
     }
-    r0 = _x_30;
-    r1 = _x_31;
-    r2 = _x_32;
-    r3 = _x_33;
-    r4 = _x_34;
-    r5 = _x_35;
-    r6 = _x_36;
-    r7 = _x_37;
+    r0 = _x_31;
+    r1 = _x_32;
+    r2 = _x_33;
+    r3 = _x_34;
+    r4 = _x_35;
+    r5 = _x_36;
+    r6 = _x_37;
+    r7 = _x_38;
     WL_JMP(FID_FRAME);
   }}
 #endif
@@ -12018,11 +11970,11 @@ static Reply work_loop(Env e, Stk sp, Term t, u32 seq) {
 #if !DEVICE
   WL_CASE(FID_STDIN_READ)
   {
-    Term _k_1 = r0;
+    Term _k_2 = r0;
     WL_OPEN
-    u64 _nd_5 = heap_alloc(e, cls_fit(1));
-    e.mem[_nd_5 + 0] = _k_1;
-    r0 = term_ctr(CID_STDIN_READ, _nd_5);
+    u64 _nd_2 = heap_alloc(e, cls_fit(1));
+    e.mem[_nd_2 + 0] = _k_2;
+    r0 = term_ctr(CID_STDIN_READ, _nd_2);
     WL_RETN(1);
   }}
 #endif
@@ -12030,31 +11982,29 @@ static Reply work_loop(Env e, Stk sp, Term t, u32 seq) {
 #if !DEVICE
   WL_CASE(FID_STDOUT_WRITE)
   {
-    Term _a_0 = r0;
-    Term _n_0 = r1;
-    Term _k_2 = r2;
+    Term _a_1 = r0;
+    Term _n_1 = r1;
+    Term _k_3 = r2;
     WL_OPEN
-    u64 _nd_6 = heap_alloc(e, cls_fit(3));
-    e.mem[_nd_6 + 0] = _a_0;
-    e.mem[_nd_6 + 1] = _n_0;
-    e.mem[_nd_6 + 2] = _k_2;
-    r0 = term_ctr(CID_STDOUT_WRITE, _nd_6);
+    u64 _nd_3 = heap_alloc(e, cls_fit(3));
+    e.mem[_nd_3 + 0] = _a_1;
+    e.mem[_nd_3 + 1] = _n_1;
+    e.mem[_nd_3 + 2] = _k_3;
+    r0 = term_ctr(CID_STDOUT_WRITE, _nd_3);
     WL_RETN(1);
   }}
 #endif
 
-// A task enters through its words: a continuation's results ride r0.. and
-// its parameters the stack; any other segment's parameters ride r0..
   WL_CASE(FID_ENTER)
   {
     Term t = r0;
     WL_OPEN
-    Fid f   = (u32)term_aux(t);
-    Loc a   = term_loc(t);
+    u32 f   = (u32)term_aux(t);
+    u64 a   = term_loc(t);
     u32 war = fid_arity(f);
     WL_FRAME(t)
     seq |= fid_nofk(f) << 1;
-    if (fid_seqk(f)) {
+    if (fid_resw(f)) {
       u32 rw = fid_resw(f);
       WL_LOAD(a + war - rw, rw)
       WL_ARGS(a, war - rw + 1)
@@ -12069,7 +12019,7 @@ static Reply work_loop(Env e, Stk sp, Term t, u32 seq) {
   {
     Term x = r0;
     WL_OPEN
-    Loc l = heap_alloc(e, 0);
+    u64 l = heap_alloc(e, 0);
     e.mem[l] = x;
     r0 = term_ctr(CID_EMIT, l);
     WL_RETN(1);
@@ -12080,9 +12030,9 @@ static Reply work_loop(Env e, Stk sp, Term t, u32 seq) {
     Term fun = r0;
     Term arg = r1;
     WL_OPEN
-    Fid f    = (Fid)term_aux(fun);
+    u32 f    = (u32)term_aux(fun);
     u32 war  = fid_arity(f) - 1;
-    Loc a    = term_loc(fun);
+    u64 a    = term_loc(fun);
     WL_LOAD(a, war)
     spare_free(e, cls_fit(war), a);
     WL_LAST(arg)
@@ -12101,9 +12051,9 @@ static Reply work_loop(Env e, Stk sp, Term t, u32 seq) {
     sp -= 2 * LANE_STEP;
     Term cont = STK(0);
     u32  idx  = (u32)STK(1);
-    if (cont != TERM_HOLE && fid_seqk((u32)term_aux(cont))) {
-      Fid wf = (u32)term_aux(cont);
-      Loc wa = term_loc(cont);
+    if (cont != TERM_HOLE && fid_resw((u32)term_aux(cont))) {
+      u32 wf = (u32)term_aux(cont);
+      u64 wa = term_loc(cont);
       u32 wn = fid_arity(wf);
       WL_FRAME(cont)
       seq = (seq & 1) | fid_nofk(wf) << 1;
@@ -12128,12 +12078,13 @@ static Reply work_loop(Env e, Stk sp, Term t, u32 seq) {
 // Monk
 // ====
 
-// One turn on a ring: its head task below put0 runs (a growing lane skips a
-// fork-free one). The host grows a row ring by ring and drains a ring; a
-// device lane does both.
-INLINE u32 monk_step(Env e, Stk stk, Ring rg, u32 put0, bool seq, u32 base,
-  u32 stride, Cur cur) {
-  Corpus   H   = e.mem;
+// One turn on a ring: its head task below put0 runs (a growing
+// lane skips a fork-free one). The host grows a row ring by
+// ring and drains a ring; a device lane does both.
+INLINE u32 monk_step(Env e, DEV Term* stk, u32 rg, u32 put0, u32 base, u32 stride,
+  TG u32* cur) {
+  DEV u64* H   = e.mem;
+  bool     seq = stride == 0;
   DEV u32* get = ring_get(H, rg);
   if (*get == put0) {
     return 0;
@@ -12147,7 +12098,7 @@ INLINE u32 monk_step(Env e, Stk stk, Ring rg, u32 put0, bool seq, u32 base,
   a32_store(get, *get + 1);
   u32 spin = 0;
   for (;;) {
-    Reply r = work_loop(e, stk, t, seq);
+    Term r = work_loop(e, stk, t, seq);
     if (r == 0) {
       return 2;
     }
@@ -12172,9 +12123,12 @@ INLINE u32 monk_step(Env e, Stk stk, Ring rg, u32 put0, bool seq, u32 base,
 // Dev
 // ===
 
-// TG_HOLD words of threadgroup memory hold one group per Apple core
-// (bitonic 1.35x without). A grow pass ends when its group is full or
-// nothing grew, so a spine of forks unrolls whole.
+// One kernel: pass 0 grows the frontier, pass 1 drains each lane's ring,
+// pass 2 packs the banks: in one group, each bank's [top, wr) slides onto
+// rd, CUBE_T entries a step (loads, barrier, stores: rd <= top), off the
+// host's pages. A grow pass ends when its group is full or nothing grew,
+// so a spine of forks unrolls whole. TG_HOLD words of threadgroup memory
+// hold one group per Apple core (bitonic 1.35x without).
 
 #if DEVICE
 
@@ -12182,11 +12136,11 @@ INLINE void dev_cut(Env e) {
   if (err_seen(e.mem)) {
     return;
   }
-  for (Cls c = 0; c < NCLS_ALL; c += 1) {
+  for (u32 c = 0; c < NCLS_ALL; c += 1) {
     u64 gen = (u64)KEEP(c) << c;
     while (ALC_LEN(e, c) >= gen) {
-      Loc head = ALC_AT(e, c);
-      Loc tail = head;
+      u64 head = ALC_AT(e, c);
+      u64 tail = head;
       for (u32 i = KEEP(c); --i;) {
         tail = e.mem[tail];
       }
@@ -12198,10 +12152,8 @@ INLINE void dev_cut(Env e) {
   }
 }
 
-// Pass 2, one group: each bank's [top, wr) slides onto rd, CUBE_T entries a
-// step (loads, barrier, stores: rd <= top), off the host's pages.
-INLINE void bank_pack(Corpus H, u32 lane) {
-  for (Cls c = 0; c < NCLS_ALL; c += 1) {
+INLINE void bank_pack(DEV u64* H, u32 lane) {
+  for (u32 c = 0; c < NCLS_ALL; c += 1) {
     DEV Bank* b  = bank_at(H, c);
     u32       rd = b->rd;
     u32       n  = b->wr - b->top;
@@ -12219,17 +12171,15 @@ INLINE void bank_pack(Corpus H, u32 lane) {
   }
 }
 
-// One kernel: pass 0 grows the frontier, pass 1 drains each lane's ring,
-// pass 2 packs the banks.
 #ifdef __METAL_VERSION__
-kernel void bend_dev(Corpus H [[buffer(0)]], constant u32& pass [[buffer(1)]],
-  threadgroup volatile u64* hold [[threadgroup(0)]],
+kernel void bend_dev(DEV u64* H [[buffer(0)]], constant u32& pass [[buffer(1)]],
+  TG u32* vote [[threadgroup(0)]],
   u32 grids [[threadgroups_per_grid]],
   u32 row [[threadgroup_position_in_grid]],
   u32 lane [[thread_position_in_threadgroup]]) {
 #else
-extern "C" __global__ void bend_dev(Corpus H, u32 pass) {
-  extern __shared__ volatile u64 hold[];
+extern "C" __global__ void bend_dev(DEV u64* H, u32 pass) {
+  extern __shared__ u32 vote[];
   u32 grids = gridDim.x;
   u32 row   = blockIdx.x;
   u32 lane  = threadIdx.x;
@@ -12240,16 +12190,14 @@ extern "C" __global__ void bend_dev(Corpus H, u32 pass) {
   }
   u32  stride = grids == 1 ? CUBE_G : 1;
   u32  me     = row * CUBE_T + stride * lane;
-  Ring rg     = pass ? ring_flip(me) : me;
+  u32 rg     = pass ? ring_flip(me) : me;
   Env  e      = { H, H + ALC_OFF + me };
-  Stk  stk    = (Stk)(H + STAK_OFF + me);
+  DEV Term*  stk    = (DEV Term*)(H + STAK_OFF + me);
   if (lane == 0) {
-    hold[0] = 0;
+    for (u32 i = 0; i < 3; i += 1) {
+      a32_store(vote + i, 0);
+    }
   }
-  GA32 tg_cur, tg_grew, tg_has;
-  g32_ini(&tg_cur);
-  g32_ini(&tg_grew);
-  g32_ini(&tg_has);
   BAR();
   u32 put0      = a32_load(ring_put(H, rg));
   u32 seen_has  = 0;
@@ -12261,26 +12209,26 @@ extern "C" __global__ void bend_dev(Corpus H, u32 pass) {
       }
     } else {
       put0 = a32_load(ring_put(H, rg));
-      u32 vote = put0 != a32_load(ring_get(H, rg));
+      u32 has = put0 != a32_load(ring_get(H, rg));
       if (lane == 0 && (err_seen(H) || root_done(H))) {
-        vote = CUBE_T;
+        has = CUBE_T;
       }
-      g32_add(&tg_has, vote);
+      a32_add(vote + 2, has);
       BAR();
-      u32 has = g32_get(&tg_has);
+      has = a32_load(vote + 2);
       if (has - seen_has >= CUBE_T) {
         break;
       }
       seen_has = has;
     }
-    u32 ran = monk_step(e, stk, rg, put0, pass, pass ? rg : row * CUBE_T,
-      pass ? 0 : stride, &tg_cur);
+    u32 ran = monk_step(e, stk, rg, put0, row * CUBE_T, pass ? 0 : stride,
+      vote);
     if (!pass) {
       if (ran == 1) {
-        g32_add(&tg_grew, 1);
+        a32_add(vote + 1, 1);
       }
       BARD();
-      u32 grew = g32_get(&tg_grew);
+      u32 grew = a32_load(vote + 1);
       if (grew == seen_grew) {
         break;
       }
@@ -12299,21 +12247,20 @@ extern "C" __global__ void bend_dev(Corpus H, u32 pass) {
 // 2^k x 2^k (Qua splits tl, tr, bl, br; Pix is 0xRRGGBB).
 #if defined(__linux__) || defined(BEND_RTC)
 
-INLINE u32 window_pix(Corpus H, Term t, u32 k, u32 x, u32 y) {
+INLINE u32 window_pix(DEV u64* H, Term t, u32 k, u32 x, u32 y) {
   for (u32 i = k; term_tag(t) == TAG_CTR;) {
     u32 j = 0;
     if (i > 0) {
       i -= 1;
       j = ((y >> i) & 1) * 2 + ((x >> i) & 1);
     }
-    Loc l = term_rfc(t) ? H[term_loc(t)] >> 24 : term_loc(t);
-    t = H[l + j];
+    t = H[term_peek(H, t) + j];
   }
   return (u32)term_loc(t) & 0xFFFFFF;
 }
 
 #ifdef BEND_RTC
-extern "C" __global__ void window_dev(Corpus H, Term root, u32 w, u32 h,
+extern "C" __global__ void window_dev(DEV u64* H, Term root, u32 w, u32 h,
   u32 k, u32* out) {
   u32 x = blockIdx.x * blockDim.x + threadIdx.x;
   u32 y = blockIdx.y * blockDim.y + threadIdx.y;
@@ -12330,8 +12277,8 @@ extern "C" __global__ void window_dev(Corpus H, Term root, u32 w, u32 h,
 // Row
 // ===
 
-static void row_grow(Env e, Stk stk, u32 base, u32 stride, u32 want) {
-  Corpus H = e.mem;
+static void row_grow(Env e, DEV Term* stk, u32 base, u32 stride, u32 want) {
+  u64* H = e.mem;
   u32 cur = 0;
   for (;;) {
     u32 put0[CUBE_T];
@@ -12346,8 +12293,8 @@ static void row_grow(Env e, Stk stk, u32 base, u32 stride, u32 want) {
     u32 grew = 0;
     u32 ran  = 0;
     for (u32 i = 0; i < CUBE_T && ran != 2; i += 1) {
-      ran   = monk_step(e, stk, base + i * stride, put0[i], false, base,
-        stride, &cur);
+      ran   = monk_step(e, stk, base + i * stride, put0[i], base, stride,
+        &cur);
       grew += ran == 1;
     }
     if (grew == 0) {
@@ -12358,6 +12305,8 @@ static void row_grow(Env e, Stk stk, u32 base, u32 stride, u32 want) {
 
 // Pool
 // ====
+
+// cpu_count caps the CPU count by the affinity mask and the cgroup quota.
 
 static void* pool_try(void* at, u64 bytes) {
   return mmap(at, bytes, PROT_READ | PROT_WRITE,
@@ -12388,17 +12337,17 @@ static Term* pool_stack(void) {
 
 static void* pool_work(void* arg) {
   Term* stk  = pool_stack();
-  u64   seen = 0;
+  u32   seen = 0;
   for (;;) {
     pthread_mutex_lock(&pool_lock);
-    while (atomic_load_explicit(&pool_tick, memory_order_acquire) == seen) {
+    while (pool_tick == seen) {
       pthread_cond_wait(&pool_wake, &pool_lock);
     }
+    seen = pool_tick;
     pthread_mutex_unlock(&pool_lock);
-    seen = atomic_load_explicit(&pool_tick, memory_order_acquire);
     Env e = { CORPUS, ALC[1 + (u32)(uintptr_t)arg] };
     for (;;) {
-      u32 r = atomic_fetch_add_explicit(&pool_row, 1, memory_order_relaxed);
+      u32 r = a32_add(&pool_row, 1);
       if (r >= (pool_grow ? CUBE_G : LANES / LINE)) {
         break;
       }
@@ -12406,17 +12355,16 @@ static void* pool_work(void* arg) {
         row_grow(e, stk, r * CUBE_T, 1, CUBE_T);
       } else {
         u32  step = CUBE_T / LINE;
-        Ring row  = r / step * CUBE_T;
-        for (Ring rg = row + r % step; rg < row + CUBE_T; rg += step) {
+        u32 row  = r / step * CUBE_T;
+        for (u32 rg = row + r % step; rg < row + CUBE_T; rg += step) {
           u32 put0 = a32_load(ring_put(e.mem, rg));
           while (*ring_get(e.mem, rg) != put0 && !err_seen(e.mem)) {
-            monk_step(e, stk, rg, put0, true, rg, 0, NULL);
+            monk_step(e, stk, rg, put0, rg, 0, NULL);
           }
         }
       }
     }
-    u32 done = atomic_fetch_add_explicit(&pool_done, 1, memory_order_release);
-    if (done + 1 == pool_size) {
+    if (a32_sub_rel(&pool_done, 1) == 1) {
       pthread_mutex_lock(&pool_lock);
       pthread_cond_broadcast(&pool_wake);
       pthread_mutex_unlock(&pool_lock);
@@ -12438,7 +12386,6 @@ OUTLINE void pool_open(void) {
   }
 }
 
-// The CPUs this process may use: affinity mask under the cgroup quota
 static int cpu_read(const char* path, long* a, long* b) {
   FILE* f = fopen(path, "r");
   int   n = f == NULL ? 0 : fscanf(f, "%ld %ld", a, b);
@@ -12470,12 +12417,12 @@ static long cpu_count(void) {
 
 OUTLINE void pool_turn(bool grow) {
   pool_grow = grow;
-  atomic_store_explicit(&pool_row, 0, memory_order_relaxed);
-  atomic_store_explicit(&pool_done, 0, memory_order_relaxed);
+  a32_store(&pool_row, 0);
+  a32_store(&pool_done, pool_size);
   pthread_mutex_lock(&pool_lock);
-  atomic_fetch_add_explicit(&pool_tick, 1, memory_order_release);
+  pool_tick += 1;
   pthread_cond_broadcast(&pool_wake);
-  while (atomic_load_explicit(&pool_done, memory_order_acquire) < pool_size) {
+  while (a32_load_acq(&pool_done) != 0) {
     pthread_cond_wait(&pool_wake, &pool_lock);
   }
   pthread_mutex_unlock(&pool_lock);
@@ -12484,9 +12431,12 @@ OUTLINE void pool_turn(bool grow) {
 // Gpu
 // ===
 
-// gpu_make compiles the device program into <binary>.gpu (--gpu-build):
-// Metal's binary archive, or CUDA's cubin behind a hash of the text. A
-// launch loads it, else notes and compiles.
+// gpu_make compiles the device program into <binary>.gpu
+// (--gpu-build): Metal's binary archive, or CUDA's cubin behind a
+// hash of the text. A launch loads it, else notes and compiles. CUDA
+// shapes the bag by the device: a group of 128 lanes per 64 KB of
+// L2, a power of two in 16..128 (Apple keeps the tuned 128). CUDA
+// runs one stream: the default 8 cost about half of the startup.
 
 static const char* gpu_path(void) {
   static char path[4096];
@@ -12597,6 +12547,13 @@ static void gpu_load(u64 bytes) {
   gpu_buf = [gpu_dev newBufferWithBytesNoCopy:CORPUS length:bytes
     options:MTLResourceStorageModeShared
       | MTLResourceHazardTrackingModeUntracked deallocator:nil];
+  u64 most = [gpu_dev maxBufferLength];
+  if (!gpu_buf && bytes > most) {
+    char msg[96];
+    snprintf(msg, sizeof msg, "--gpu %lluMB is over the device's %lluMB",
+      (unsigned long long)(bytes >> 20), (unsigned long long)(most >> 20));
+    err_fail(msg);
+  }
   if (!gpu_buf) {
     err_fail("the GPU span is more than the device has");
   }
@@ -12642,8 +12599,6 @@ static void gpu_pass(u32 f) {
 
 #elif BEND_CUDA
 
-// The bag from the device: a group of 128 lanes per 64 KB of L2, a power of
-// two in 16..128 (Apple keeps the tuned 128).
 static void gpu_shape(int units) {
   CUBE_LOG = 31 - CLZ(units < 16 ? 16 : units > 128 ? 128 : units);
 }
@@ -12651,7 +12606,6 @@ static void gpu_shape(int units) {
 static bool gpu_probe(void) {
   int       managed = 0;
   CUcontext ctx;
-  // one stream: the default 8 cost about half of the startup
   setenv("CUDA_DEVICE_MAX_CONNECTIONS", "1", 0);
   if (cuInit(0) == CUDA_SUCCESS && cuDeviceGet(&gpu_dev, 0) == CUDA_SUCCESS) {
     cuDeviceGetAttribute(&managed,
@@ -12665,7 +12619,7 @@ static bool gpu_probe(void) {
     && cuCtxSetCurrent(ctx) == CUDA_SUCCESS;
 }
 
-static Corpus gpu_map(u64 bytes) {
+static u64* gpu_map(u64 bytes) {
   CUdeviceptr p = 0;
   if (cuMemAllocManaged(&p, bytes, CU_MEM_ATTACH_GLOBAL) != CUDA_SUCCESS) {
     err_fail("corpus reservation failed");
@@ -12676,7 +12630,7 @@ static Corpus gpu_map(u64 bytes) {
 #else
   cuMemAdvise(p, bytes, CU_MEM_ADVISE_SET_PREFERRED_LOCATION, gpu_dev);
 #endif
-  return (Corpus)(uintptr_t)p;
+  return (u64*)(uintptr_t)p;
 }
 
 static bool gpu_make(const char* path) {
@@ -12776,10 +12730,12 @@ static void gpu_pass(u32 f) {
 // Cube
 // ====
 
-static void cube_run(Corpus H, bool gpu) {
+// Under a unit (CUBE_T / LINE a row) per thread, the host's column grows
+// to the rows that give one, no more: each touches a page of every plane.
+
+static void cube_run(u64* H, bool gpu) {
   for (;;) {
-    u32 f = a32_load(a32_at(H, H_CURSOR));
-    a32_store(a32_at(H, H_CURSOR), 0);
+    u32 f = a32_exch(a32_at(H, H_CURSOR), 0);
     if (root_done(H)) {
       return;
     }
@@ -12789,8 +12745,6 @@ static void cube_run(Corpus H, bool gpu) {
     if (gpu) {
       gpu_pass(f);
     } else {
-      // Under a unit (CUBE_T / LINE a row) per thread, the column grows to
-      // the rows that give one, no more: each touches a page of every plane.
       if (f * (CUBE_T / LINE) < pool_size) {
         row_grow((Env){ H, ALC[0] }, io_stk, 0, CUBE_G,
           (pool_size + CUBE_T / LINE - 1) / (CUBE_T / LINE));
@@ -12810,9 +12764,9 @@ static void cube_run(Corpus H, bool gpu) {
 // Corpus
 // ======
 
-// The cores map 8 GiB at a high base and double it in place, so one base
-// holds every Loc; the banks move up past the pages. The GPU maps its span
-// once.
+// The cores map 8 GiB at a high base and double it in place, so one
+// base holds every location; the banks move up past the pages. The GPU maps
+// its whole span at once, and never grows it.
 
 static u64 corpus_size;
 
@@ -12832,7 +12786,7 @@ static void* corpus_map(u64 size) {
   return p;
 }
 
-static void corpus_lay(Corpus H, u64 size) {
+static void corpus_lay(u64* H, u64 size) {
   u64 span = size / 8;
   u64 cap  = span > HEAP_OFF ? (span - HEAP_OFF) / (PAGE_LEN + 10) : 0;
   if (cap <= CUBE) {
@@ -12850,7 +12804,7 @@ static void corpus_lay(Corpus H, u64 size) {
   a32_store_rel(a32_at(H, H_CAP), (u32)cap);
 }
 
-static bool corpus_grow(Corpus H, u64 need) {
+static bool corpus_grow(u64* H, u64 need) {
   bool ok = true;
   LOCK(bank_lock);
   while (ok && need > a32_load(a32_at(H, H_CAP))) {
@@ -12869,13 +12823,13 @@ static bool corpus_grow(Corpus H, u64 need) {
   return ok;
 }
 
-static Corpus corpus_setup(bool gpu, long threads, u64 bytes) {
+static u64* corpus_setup(bool gpu, long threads, u64 bytes) {
   io_gpu     = gpu;
   KEEP_WORDS = gpu ? CHUNK : CAP_WORDS;
   u64 dflt   = gpu ? gpu_span() : 1ull << 33;
   u64 size   = (gpu && bytes != 0 ? bytes : dflt) & ~16383ull;
   CORPUS     = gpu ? gpu_map(size) : corpus_map(size);
-  Corpus H   = CORPUS;
+  u64* H     = CORPUS;
 #if BEND_CUDA
   if (gpu) {
     cuMemsetD8((CUdeviceptr)(uintptr_t)H, 0, STAK_OFF * 8);
@@ -12892,11 +12846,11 @@ static Corpus corpus_setup(bool gpu, long threads, u64 bytes) {
   return H;
 }
 
-OUTLINE Term corpus_eval(Corpus H, Term t) {
+OUTLINE Term corpus_eval(u64* H, Term t) {
   Env  e = { H, ALC[0] };
   Term rv[WL_RESW];
   for (;;) {
-    Reply r = work_loop(e, io_stk, t, !BANGS && pool_size == 1);
+    Term r = work_loop(e, io_stk, t, !BANGS && pool_size == 1);
     if (r == 0) {
       if (root_done(H)) {
         break;
@@ -12906,7 +12860,7 @@ OUTLINE Term corpus_eval(Corpus H, Term t) {
     if ((u32)H[task_tail(r) + 1] == 0) {
       t = r;
       if (io_gpu && fid_bangs((u32)term_aux(t))) {
-        Loc  tl   = task_tail(t);
+        u64  tl   = task_tail(t);
         Term cont = H[tl];
         u32  idx  = (u32)(H[tl + 1] >> 32) & 0xFFFF;
         H[tl]     = TERM_HOLE;
@@ -12924,7 +12878,7 @@ OUTLINE Term corpus_eval(Corpus H, Term t) {
       }
       continue;
     }
-    task_deal(H, r, 0, 0, (Cur)0);
+    task_deal(H, r, 0, 0, NULL);
     pool_open();
     cube_run(H, false);
     break;
@@ -12936,6 +12890,16 @@ OUTLINE Term corpus_eval(Corpus H, Term t) {
 // Io
 // ==
 
+// Base's opaque, linear handles pack host fds or pointers into aux and loc:
+// no forging, copying, reuse or host wrapper. A request's cont applied to
+// its item is the next request. A parked request keeps its fd, deadline and
+// readiness in word, time and evts; the loop then calls pack: a value
+// resumes, IO_PARK parks again. The edge is UTF-8, decoded as WHATWG does: a
+// broken sequence yields one U+FFFD and its breaking byte is read again as a
+// lead. inet_aton reads a leading zero as octal, so io_sys_addr refuses it.
+// macOS poll misses FIFO EOF, so io_wait selects, its sets sized to the
+// highest fd (_DARWIN_UNLIMITED_SELECT allows fds past FD_SETSIZE).
+
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -12946,8 +12910,6 @@ OUTLINE Term corpus_eval(Corpus H, Term t) {
 #define IO_TIME 2
 #define IO_PARK TERM_HOLE
 
-// Base's opaque, linear handles pack host fds/pointers into aux/loc: no
-// forging, copying, reuse or host wrapper.
 #define io_hand(v)   term_make(TAG_PAK, (u64)(v) >> 40, (u64)(v) & LOC_MASK)
 #define io_hand_v(t) (((u64)term_aux(t) << 40) | term_loc(t))
 
@@ -12956,15 +12918,20 @@ typedef void (*IoCall)(struct IoWork* w);
 typedef Term (*IoPack)(Env e, struct IoWork* w);
 
 typedef struct IoWork {
-  intptr_t hand;
-  intptr_t made;
-  u32      word;
-  u64      size;
-  char*    data;
-  char*    text;
-  u32      code;
-  IoCall   call;
-  IoPack   pack;
+  intptr_t       hand;
+  intptr_t       made;
+  u32            word;
+  u64            size;
+  char*          data;
+  char*          text;
+  u32            code;
+  IoCall         call;
+  IoPack         pack;
+  Term           cont;
+  Term           item;
+  u64            time;
+  short          evts;
+  struct IoWork* next;
 } IoWork;
 
 typedef Term (*Effect)(Env e, Term* f, IoWork* w);
@@ -12994,9 +12961,9 @@ static int io_sys_addr(const char* host, u32 port, struct sockaddr_in* at) {
   memset(at, 0, sizeof(*at));
   at->sin_family = AF_INET;
   at->sin_port   = htons((uint16_t)port);
-  // a leading zero is octal to inet_aton: refused
   for (const char* p = host; *p != 0; p += 1) {
-    if ((p == host || p[-1] == '.') && *p == '0' && p[1] >= '0' && p[1] <= '9') {
+    if ((p == host || p[-1] == '.') && *p == '0'
+      && p[1] >= '0' && p[1] <= '9') {
       return -1;
     }
   }
@@ -13004,11 +12971,13 @@ static int io_sys_addr(const char* host, u32 port, struct sockaddr_in* at) {
     ? -1 : 0;
 }
 
-// The program's arguments (IO.args).
 static int    io_argc;
 static char** io_argv;
 
 static void io_eff(u32 cid, Effect run, u32 need) {
+  if (io_eff_rows[cid].run != NULL) {
+    err_fail("two effects register one request");
+  }
   io_eff_rows[cid] = (IoEff){ run, need };
 }
 
@@ -13017,61 +12986,54 @@ static u64 io_sys_end(IoWork* w, ssize_t n) {
   return n < 0 ? 0 : (u64)n;
 }
 
-// cont(item) is the next request; parked, word/time/evts hold the fd,
-// deadline and readiness. The leading work allows IoWork* to IoAct* casts.
-typedef struct IoAct {
-  IoWork        work;
-  Term          cont;
-  Term          item;
-  u64           time;
-  short         evts;
-  struct IoAct* next;
-} IoAct;
+static IoWork* io_runs;
+static IoWork* io_park;
+static IoWork* io_jobs;
 
-typedef struct {
-  IoAct* head;
-  IoAct* last;
-} IoQue;
-
-static IoQue io_runs;
-static IoQue io_park;
-static IoQue io_jobs;
-
-static void io_push(IoQue* q, IoAct* a) {
-  a->next = NULL;
-  *(q->head == NULL ? &q->head : &q->last->next) = a;
-  q->last = a;
+static void io_push(IoWork** q, IoWork* a) {
+  IoWork* l = *q != NULL ? *q : a;
+  a->next = l->next;
+  l->next = a;
+  *q      = a;
 }
 
-static IoAct* io_pop(IoQue* q) {
-  IoAct* a = q->head;
-  q->head  = a->next;
+static IoWork* io_pop(IoWork** q) {
+  IoWork* a  = (*q)->next;
+  (*q)->next = a->next;
+  *q         = a != *q ? *q : NULL;
   return a;
 }
 
 static void io_spawn(Term m) {
-  IoAct* a = io_mem(calloc(1, sizeof(IoAct)));
+  IoWork* a = io_mem(calloc(1, sizeof(IoWork)));
   a->cont  = m;
   a->item  = term_clo(FID_IO_EMIT, 0);
   io_push(&io_runs, a);
   io_live += 1;
 }
 
-// Park until evts (POLLIN/POLLOUT; 0 ignores fd) or time (0: none); the
-// loop then calls more: a value resumes, IO_PARK re-parks.
-static Term io_wait_on(IoWork* w, int fd, short evts, u64 time, IoPack more) {
-  IoAct* a     = (IoAct*)w;
-  a->work.word = (u32)fd;
-  a->work.pack = more;
-  a->time      = time;
-  a->evts      = evts;
-  io_push(&io_park, a);
-  return IO_PARK;
+// io_park stays in deadline order (time 0, none, sorts last; ties keep
+// their park order), so io_wait wakes due timers in the order they expire.
+static void io_park_add(IoWork* w) {
+  IoWork* p = io_park;
+  if (p == NULL || p->time - 1 <= w->time - 1) {
+    io_push(&io_park, w);
+    return;
+  }
+  while (p->next->time - 1 <= w->time - 1) {
+    p = p->next;
+  }
+  w->next = p->next;
+  p->next = w;
 }
 
-// Parked deadline (0: none).
-static u64 io_wait_time(IoWork* w) {
-  return ((IoAct*)w)->time;
+static Term io_wait_on(IoWork* w, int fd, short evts, u64 time, IoPack more) {
+  w->word = (u32)fd;
+  w->pack = more;
+  w->time = time;
+  w->evts = evts;
+  io_park_add(w);
+  return IO_PARK;
 }
 
 OUTLINE void io_out(FILE* h, const char* data, u64 len) {
@@ -13086,7 +13048,6 @@ OUTLINE void io_sync(void) {
   }
 }
 
-// the edge is UTF-8
 static u64 io_utf8(char* buf, u64 c) {
   u64 k = c < 0x80 ? 1 : c < 0x800 ? 2 : c < 0x10000 ? 3 : 4;
   for (u64 i = k; i > 1; i -= 1) {
@@ -13097,24 +13058,38 @@ static u64 io_utf8(char* buf, u64 c) {
   return k;
 }
 
-OUTLINE char* io_cstr(Env e, Term s, u64* len) {
+// io_cbuf writes a String (cons SCon) as UTF-8, or a List (cons Con) as
+// its bytes, with no UTF-8: NULL if a value is past 255.
+OUTLINE char* io_cbuf(Env e, Term s, u64* len, u64 cons) {
   u64   cap = 64;
   u64   n   = 0;
+  u64   bad = 0;
   char* buf = io_mem(malloc(cap));
-  while (term_aux(s) == CID_SCON) {
+  while (term_aux(s) == cons) {
     Term fb[2];
     spare_free(e, cls_fit(2), ctr_take(e, s, 2, fb));
     if (n + 5 > cap) {
       cap *= 2;
       buf = io_mem(realloc(buf, cap));
     }
-    n += io_utf8(buf + n, fb[0]);
+    if (cons == CID_SCON) {
+      n += io_utf8(buf + n, fb[0]);
+    } else {
+      bad |= fb[0] > 255;
+      buf[n++] = (char)fb[0];
+    }
     s = fb[1];
   }
   buf[n] = 0;
   *len = n;
+  if (bad) {
+    free(buf);
+    return NULL;
+  }
   return buf;
 }
+
+#define io_cstr(e, s, len) io_cbuf(e, s, len, CID_SCON)
 
 OUTLINE void io_errs(Env e, Term s) {
   u64   n    = 0;
@@ -13130,17 +13105,15 @@ OUTLINE void io_errs(Env e, Term s) {
 #define io_seal(e, t, cid) (cid_hot(cid) ? rfc_seal(e, t) : (t))
 
 static Term io_node(Env e, u64 cid, Term a, Term b) {
-  Loc l = heap_alloc(e, 1);
+  u64 l = heap_alloc(e, 1);
   e.mem[l]     = io_seal(e, a, cid);
   e.mem[l + 1] = io_seal(e, b, cid);
   return term_ctr(cid, l);
 }
 
-// io_str decodes UTF-8 as WHATWG does: a broken sequence yields one U+FFFD
-// and its breaking byte is reread as a lead.
 static Term io_str(Env e, const char* p, u64 n) {
   Term s    = term_pak(CID_SNIL, 0);
-  Loc  hole = 0;
+  u64  hole = 0;
   u64  c = 0, need = 0, lo = 0x80, hi = 0xBF;
   for (u64 i = 0; i < n || need > 0; i += 1) {
     u64 b = i < n ? (uint8_t)p[i] : 0x100;
@@ -13166,7 +13139,7 @@ static Term io_str(Env e, const char* p, u64 n) {
       c    = b & (0x3F >> need);
       continue;
     }
-    Loc  l = heap_alloc(e, 1);
+    u64  l = heap_alloc(e, 1);
     Term t = term_ctr(CID_SCON, l);
     e.mem[l] = c;
     if (hole == 0) {
@@ -13182,11 +13155,24 @@ static Term io_str(Env e, const char* p, u64 n) {
   return s;
 }
 
+// Bytes cross as they are (0..255), one List cell each, with no UTF-8.
+#ifdef CID_CON
+
+static Term io_list(Env e, const char* p, u64 n) {
+  Term xs = term_pak(CID_NIL, 0);
+  for (u64 i = n; i > 0; i -= 1) {
+    xs = io_node(e, CID_CON, (uint8_t)p[i - 1], xs);
+  }
+  return xs;
+}
+
+#endif
+
 #define io_tup(e, a, b) io_node(e, CID_TUPLE, a, b)
 #define io_done(e, v)   io_box(e, CID_DONE, v)
 
 static Term io_box(Env e, u64 cid, Term v) {
-  Loc l = heap_alloc(e, 0);
+  u64 l = heap_alloc(e, 0);
   e.mem[l] = io_seal(e, v, cid);
   return term_ctr(cid, l);
 }
@@ -13197,19 +13183,19 @@ static Term io_fail(Env e, u32 code, const char* text) {
   return io_box(e, CID_FAIL, t);
 }
 
-static lock           io_gate = PTHREAD_MUTEX_INITIALIZER;
-static pthread_cond_t io_bell = PTHREAD_COND_INITIALIZER;
-static u32            io_busy;
-static u32            io_size;
-static int            io_wake_fd[2];
+static pthread_mutex_t io_gate = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t  io_bell = PTHREAD_COND_INITIALIZER;
+static u32             io_busy;
+static u32             io_size;
+static int             io_wake_fd[2];
 
 static void io_take(Env e) {
-  IoAct*  acts[64];
+  IoWork* acts[64];
   ssize_t n;
   while ((n = read(io_wake_fd[0], acts, sizeof acts)) > 0) {
-    for (u32 i = 0; i < (u32)n / sizeof(IoAct*); i += 1) {
-      IoAct* a = acts[i];
-      a->item  = a->work.pack(e, &a->work);
+    for (u32 i = 0; i < (u32)n / sizeof(IoWork*); i += 1) {
+      IoWork* a = acts[i];
+      a->item   = a->pack(e, a);
       io_push(&io_runs, a);
       io_busy -= 1;
     }
@@ -13219,18 +13205,17 @@ static void io_take(Env e) {
 static void* io_help(void* arg) {
   for (;;) {
     pthread_mutex_lock(&io_gate);
-    while (io_jobs.head == NULL) {
+    while (io_jobs == NULL) {
       pthread_cond_wait(&io_bell, &io_gate);
     }
-    IoAct* a = io_pop(&io_jobs);
+    IoWork* a = io_pop(&io_jobs);
     pthread_mutex_unlock(&io_gate);
-    a->work.call(&a->work);
+    a->call(a);
     while (write(io_wake_fd[1], &a, sizeof a) != sizeof a) {
     }
   }
 }
 
-// Run call on a helper thread, then pack on the loop to resume the effect.
 static Term io_work(IoWork* w, IoCall call, IoPack pack) {
   w->call  = call;
   w->pack  = pack;
@@ -13244,25 +13229,21 @@ static Term io_work(IoWork* w, IoCall call, IoPack pack) {
     io_size += 1;
   }
   pthread_mutex_lock(&io_gate);
-  io_push(&io_jobs, (IoAct*)w);
+  io_push(&io_jobs, w);
   pthread_cond_signal(&io_bell);
   pthread_mutex_unlock(&io_gate);
   return IO_PARK;
 }
 
-// Consume cont's request node; the effect returns a value or IO_PARK.
 static Term io_exec(Env e, IoWork* w) {
-  IoAct* a = (IoAct*)w;
-  Term   fs[256];
-  u32    c = (u32)term_aux(a->cont);
-  u32    n = cid_arity(c);
-  spare_free(e, cls_fit(n), ctr_take(e, a->cont, n, fs));
-  a->cont = fs[n - 1];
+  Term fs[256];
+  u32  c = (u32)term_aux(w->cont);
+  u32  n = cid_arity(c);
+  spare_free(e, cls_fit(n), ctr_take(e, w->cont, n, fs));
+  w->cont = fs[n - 1];
   return io_eff_rows[c].run(e, fs, w);
 }
 
-// macOS poll misses FIFO EOF, so select, sets sized to the highest fd
-// (_DARWIN_UNLIMITED_SELECT allows fds past FD_SETSIZE).
 static bool io_bit(u8* set, int fd, bool put) {
   u8* at = set + fd / 8;
   *at |= put << fd % 8;
@@ -13272,49 +13253,52 @@ static bool io_bit(u8* set, int fd, bool put) {
 static void io_wait(Env e) {
   int top  = io_wake_fd[0];
   u64 soon = 0;
-  for (IoAct* a = io_park.head; a != NULL; a = a->next) {
+  for (IoWork* a = io_park; a != NULL;
+    a = a->next != io_park ? a->next : NULL) {
     if (a->time != 0 && (soon == 0 || a->time < soon)) {
       soon = a->time;
     }
-    if (a->evts != 0 && (int)a->work.word > top) {
-      top = (int)a->work.word;
+    if (a->evts != 0 && (int)a->word > top) {
+      top = (int)a->word;
     }
   }
   u64 len = (u64)top / 64 * 8 + 8;
   u8* set[2] = { io_mem(calloc(2, len)), NULL };
   set[1] = set[0] + len;
   io_bit(set[0], io_wake_fd[0], true);
-  for (IoAct* a = io_park.head; a != NULL; a = a->next) {
+  for (IoWork* a = io_park; a != NULL;
+    a = a->next != io_park ? a->next : NULL) {
     if (a->evts != 0) {
-      io_bit(set[a->evts == POLLOUT], (int)a->work.word, true);
+      io_bit(set[a->evts == POLLOUT], (int)a->word, true);
     }
   }
   u64 tick = io_tick();
   u64 ms = soon > tick ? (soon - tick) / 1000000 + 1 : 0;
   struct timeval tv = { ms / 1000, ms % 1000 * 1000 };
   io_sync();
-  while (select(top + 1, (fd_set*)set[0], (fd_set*)set[1], NULL,
+  if (select(top + 1, (fd_set*)set[0], (fd_set*)set[1], NULL,
     soon == 0 ? NULL : &tv) < 0) {
     if (errno != EINTR) {
       err_fail("the poller failed");
     }
+    memset(set[0], 0, 2 * len);
   }
   if (io_bit(set[0], io_wake_fd[0], false)) {
     io_take(e);
   }
-  u64   now  = io_tick();
-  IoQue todo = io_park;
-  io_park = (IoQue){0};
-  while (todo.head != NULL) {
-    IoAct* a   = io_pop(&todo);
-    bool   due = (a->evts != 0
-        && io_bit(set[a->evts == POLLOUT], (int)a->work.word, false))
+  u64     now  = io_tick();
+  IoWork* todo = io_park;
+  io_park = NULL;
+  while (todo != NULL) {
+    IoWork* a   = io_pop(&todo);
+    bool    due = (a->evts != 0
+        && io_bit(set[a->evts == POLLOUT], (int)a->word, false))
       || (a->time != 0 && a->time <= now);
     if (!due) {
-      io_push(&io_park, a);
+      io_park_add(a);
       continue;
     }
-    Term x = a->work.pack(e, &a->work);
+    Term x = a->pack(e, a);
     if (x != IO_PARK) {
       a->item = x;
       io_push(&io_runs, a);
@@ -13369,16 +13353,21 @@ static Term f32_read(Env e, Term s) {
   return out;
 }
 
+
 // Show
 // ====
 
+// show_val prints a pure main's value as term_show spells it: d
+// is a SHOW_DESC node (see show_main), w its words, and chain the
+// bracket of the [a, b] or (a, b) the value continues, or 0. Con
+// or Nil spell a list, Tuple a tuple, and their tails continue
+// it. show_chr escapes as char_show does; show_f32 prints the
+// shortest text that reads back, with a point before an e.
+
 #if MAIN_PURE
 
-// A pure main's value as term_show spells it: d a SHOW_DESC node (see
-// show_main), w its words.
 static void show_val(Env e, u32 d, const Term* w, char chain);
 
-// char_show: an escape, a \u{hex}, else the code point in UTF-8
 static void show_chr(u64 c, char q) {
   char b[4];
   int  k = c == 10 ? 'n' : c == 9 ? 't' : c == 13 ? 'r' : c == 0 ? '0'
@@ -13393,7 +13382,6 @@ static void show_chr(u64 c, char q) {
   }
 }
 
-// The shortest text that reads back, as a literal: a point before an e
 static void show_f32(u32 x) {
   char  buf[40];
   int   n  = f32_text(buf, f32_unbox(x));
@@ -13407,17 +13395,21 @@ static void show_f32(u32 x) {
   }
 }
 
-// chain is the bracket of the [a, b] or (a, b) this value continues, or 0:
-// Con or Nil spell a list, Tuple a tuple, and their tails continue it
 static void show_val(Env e, u32 d, const Term* w, char chain) {
   const u32* D = SHOW_DESC;
   Term one;
   char zs[4];
   u32  zn = 0;
   for (bool tail = true; tail;) switch (tail = false, D[d]) {
-    case 0: printf("%u", (u32)w[0]); break;
-    case 1: show_f32((u32)w[0]); break;
-    case 2: printf("%llun", (unsigned long long)w[0]); break;
+    case 0:
+      printf("%u", (u32)w[0]);
+      break;
+    case 1:
+      show_f32((u32)w[0]);
+      break;
+    case 2:
+      printf("%llun", (unsigned long long)w[0]);
+      break;
     case 3:
       putchar('\'');
       show_chr(D[d + 1] != 0 ? term_loc(w[0]) : w[0], '\'');
@@ -13426,21 +13418,22 @@ static void show_val(Env e, u32 d, const Term* w, char chain) {
     case 4:
       putchar('"');
       for (Term s = w[0]; term_aux(s) == CID_SCON;) {
-        Loc l = term_peek(e, s);
+        u64 l = term_peek(e.mem, s);
         show_chr(e.mem[l], '"');
         s = e.mem[l + 1];
       }
       putchar('"');
       break;
-    case 5: fputs("{==}", stdout); break;
+    case 5:
+      fputs("{==}", stdout);
+      break;
     case 6:
       putchar('[');
-      // an element is 2^lgs cells of the block
       for (u32 i = 0, g = D[d + 2]; i < 1u << (blk_cls(w[0]) - g); i += 1) {
         Term v[1u << g];
         for (u32 j = 0; j < 1u << g; j += 1) {
           v[j] = blk_read(e.mem, term_tag(w[0]) == TAG_ARR,
-            term_peek(e, w[0]), (i << g) + j);
+            term_peek(e.mem, w[0]), (i << g) + j);
         }
         fputs(i > 0 ? ", " : "", stdout);
         show_val(e, D[d + 1], v, 0);
@@ -13457,7 +13450,7 @@ static void show_val(Env e, u32 d, const Term* w, char chain) {
       }
       if (box) {
         one = term_loc(t);
-        w   = term_tag(t) == TAG_PAK ? &one : e.mem + term_peek(e, t);
+        w   = term_tag(t) == TAG_PAK ? &one : e.mem + term_peek(e.mem, t);
       }
       char o = "{[("[D[a + 3]];
       if (o == '{') {
@@ -13490,24 +13483,26 @@ static void show_val(Env e, u32 d, const Term* w, char chain) {
 
 #endif
 
-// The continuation applied to the item is the next request.
-static int io_step(Env e, IoAct* a) {
+// Run
+// ===
+
+static void io_step(Env e, IoWork* a) {
   for (;;) {
-    Loc  ap  = task_node(e, FID_CLO_APPLY, TERM_HOLE, 0, 0);
+    u64  ap  = task_node(e, FID_CLO_APPLY, TERM_HOLE, 0, 0);
     e.mem[ap]     = a->cont;
     e.mem[ap + 1] = a->item;
     Term req = corpus_eval(e.mem, term_tsk(FID_CLO_APPLY, ap));
     u32  c   = (u32)term_aux(req);
-    Loc  at  = term_peek(e, req);
+    u64  at  = term_peek(e.mem, req);
     if (c == CID_EMIT) {
       term_drop(e, req);
       free(a);
       io_live -= 1;
-      return -1;
+      return;
     }
     if (c == CID_HALT) {
       io_errs(e, e.mem[at + 1]);
-      return (int)(u32)e.mem[at];
+      exit((int)(u32)e.mem[at]);
     }
     if (io_eff_rows[c].run == NULL) {
       err_fail("an alien request");
@@ -13516,19 +13511,19 @@ static int io_step(Env e, IoAct* a) {
     u32 word = (u32)(need & IO_READ ? io_hand_v(e.mem[at]) : e.mem[at]);
     a->cont  = req;
     if (need != 0) {
-      io_wait_on(&a->work, (int)word, need & IO_READ ? POLLIN : 0,
+      io_wait_on(a, (int)word, need & IO_READ ? POLLIN : 0,
         need & IO_TIME ? io_tick() + (u64)word * 1000000ull : 0, io_exec);
-      return -1;
+      return;
     }
-    Term x = io_exec(e, &a->work);
+    Term x = io_exec(e, a);
     if (x == IO_PARK) {
-      return -1;
+      return;
     }
     a->item = x;
   }
 }
 
-OUTLINE int io_loop(Corpus H) {
+OUTLINE void io_loop(u64* H) {
   Env e = { H, ALC[0] };
   io_stk = pool_stack();
   signal(SIGPIPE, SIG_IGN);
@@ -13540,19 +13535,17 @@ OUTLINE int io_loop(Corpus H) {
 #if MAIN_PURE
   show_val(e, 0, H + H_ROOT_WORD, 0);
   putchar('\n');
-  return 0;
+  return;
 #endif
   io_spawn(m);
   for (u32 n = 0;; n += 1) {
-    if (io_runs.head == NULL) {
+    if (io_runs == NULL) {
       if (io_live == 0) {
-        return 0;
+        return;
       }
-      if (io_park.head == NULL && io_busy == 0) {
+      if (io_park == NULL && io_busy == 0) {
         io_sync();
-        fprintf(stderr, "bend: deadlock: every computation waits on a"
-          " channel\n");
-        return 1;
+        err_fail("deadlock: every computation waits on a channel");
       }
       io_wait(e);
       continue;
@@ -13560,10 +13553,7 @@ OUTLINE int io_loop(Corpus H) {
     if ((n & 63) == 0 && io_busy != 0) {
       io_take(e);
     }
-    int code = io_step(e, io_pop(&io_runs));
-    if (code >= 0) {
-      return code;
-    }
+    io_step(e, io_pop(&io_runs));
   }
 }
 
@@ -13600,8 +13590,8 @@ Term stdin_read_run(Env e, Term* f, IoWork* w) {
     n += (u64)r;
   }
   // at least one pad byte, so the slot count n / 4 + 1 is never 0
-  Cls c = cls_fit((u32)(n / 4 + 1));
-  Loc l = heap_alloc(e, buf_wcls(c));
+  u32 c = cls_fit((u32)(n / 4 + 1));
+  u64 l = heap_alloc(e, buf_wcls(c));
   if (err_seen(e.mem)) {
     free(buf);
     return io_fail(e, ENOMEM, "heph-core: out of memory for the request");
@@ -13640,14 +13630,6 @@ static void __attribute__((constructor)) stdout_write_use(void) {
 }
 
 
-// Cli
-// ===
-
-static void cli_fail(const char* msg, const char* arg) {
-  fprintf(stderr, "bend: %s%s\n", msg, arg != NULL ? arg : "");
-  exit(1);
-}
-
 // Main
 // ====
 
@@ -13655,7 +13637,8 @@ int main(int argc, char** argv) {
   long thr = 0;
   int  gpu = -1;
   u64  mem = 0;
-  io_argv = argv + 1;
+  io_argv = argv;
+  io_argc = 1;
   for (int i = 1; i < argc; i += 1) {
     const char* a = argv[i];
     const char* v = i + 1 < argc ? argv[i + 1] : NULL;
@@ -13663,19 +13646,20 @@ int main(int argc, char** argv) {
       while (i + 1 < argc) {
         io_argv[io_argc++] = argv[++i];
       }
-    } else if (strcmp(a, "--help") == 0) {
+    } else if (strcmp(a, "--bend-help") == 0) {
       printf(CLI_HELP, argv[0]);
       return 0;
     } else if (strcmp(a, "--gpu-build") == 0) {
       if (gpu_probe() && !gpu_make(gpu_path())) {
-        cli_fail("cannot write ", gpu_path());
+        fprintf(stderr, "bend: cannot write %s\n", gpu_path());
+        return 1;
       }
       return 0;
     } else if (strcmp(a, "--threads") == 0) {
       char* end = NULL;
       thr = v != NULL ? strtol(v, &end, 10) : 0;
       if (thr < 1 || end == NULL || *end != '\0') {
-        cli_fail("expected a thread count of 1 or more after --threads", NULL);
+        err_fail("expected a thread count of 1 or more after --threads");
       }
       i += 1;
     } else if (strcmp(a, "--gpu") == 0) {
@@ -13689,7 +13673,7 @@ int main(int argc, char** argv) {
         gpu = 1;
         mem = (u64)(n * (double)mul);
       } else {
-        cli_fail("expected on, off or a size like 4GB after --gpu", NULL);
+        err_fail("expected on, off or a size like 4GB after --gpu");
       }
       i += 1;
     } else {
@@ -13698,12 +13682,12 @@ int main(int argc, char** argv) {
   }
   bool dev = gpu != 0 && BANGS != 0 && gpu_probe();
   if (gpu == 1 && BANGS != 0 && !dev) {
-    cli_fail("--gpu on, but this binary found no GPU device", NULL);
+    err_fail("--gpu on, but this binary found no usable GPU (a CUDA GPU needs"
+      " concurrent managed access, which WSL2's lack)");
   }
-  Corpus H  = corpus_setup(dev, thr > 0 ? thr : cpu_count(), mem);
-  int code  = io_loop(H);
+  io_loop(corpus_setup(dev, thr > 0 ? thr : cpu_count(), mem));
   io_sync();
-  return code;
+  return 0;
 }
 
 #endif
