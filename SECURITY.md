@@ -2,7 +2,7 @@
 
 ## Supported Versions
 
-Only the latest release is supported.
+Currently only the latest version from the `main` branch is supported.
 
 ## Reporting a Vulnerability
 
@@ -30,13 +30,12 @@ I will acknowledge receipt within 48 hours and provide a timeline for addressing
 - **One network peer**: the configured `base_url`. No telemetry or update checks.
 - **Untrusted materials**: symlinks and path escapes are refused, sizes are capped, Office
   archives are checked for zip bombs and traversal, and XML is parsed with `defusedxml`.
-- **Keys stay in the environment**: API keys are read from environment variables and never
-  written to disk.
+- **Keys stay yours**: API keys are read from the environment or from a key file you name,
+  and Heph never writes them anywhere.
 
 See [docs/architecture.md](docs/architecture.md) for details.
 
 ## Dependency security
 
 Runtime dependencies are four exactly pinned packages (`pypdfium2`, `defusedxml`, `rich`,
-`certifi`), locked in `uv.lock`. Bend and clang are build-time tools only. CI and
-pre-commit run gitleaks.
+`certifi`), locked in `uv.lock`. Bend and clang are build-time tools only.

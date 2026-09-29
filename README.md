@@ -1,86 +1,20 @@
-<p align="center">
-  <img alt="Heph" src="assets/logo-auto.svg" width="280">
-</p>
+# Heph
+
+Heph answers questions from the files in a folder and checks every quote it cites against
+the source. An **armory** is any folder you run `heph init` in; Heph keeps its state in
+`.harness/` inside it. Heph is a plain command line that talks to your local model.
 
 <p align="center">
-  Local agent for accurate, cited answers from your files
+  <img alt="Heph answering a question with a verified citation" src="assets/app-screenshot.png" width="100%">
 </p>
 
-<p align="center">
-  <a href="https://raw.githubusercontent.com/gildrb/heph-agent/main/assets/app-screenshot.png?v=77d812a64833">
-    <img alt="Heph answering a question with a verified citation" src="assets/app-screenshot.png?v=77d812a64833" width="100%">
-  </a>
-</p>
+## Install
 
-## Quick Start
+Choose one path. Heph needs Python 3.14 and clang 14+ (it compiles its core once).
 
-```bash
-# Install UV (if not already installed)
-curl -LsSf https://astral.sh/uv/install.sh | sh
+### From source (recommended)
 
-# Install Heph
-uv tool install heph@latest
-
-# Make a folder of your files an armory
-cd ~/Documents/[folder]
-heph init
-
-# Start Heph (it expects a model server at http://127.0.0.1:8080/v1)
-heph
-```
-
-No folder yet? Run `heph` anywhere, then `/init [name]` and `/add [file]`.
-
-## Compared to Heph 0.0.59
-
-| | 0.0.59 | Now | Proof |
-| --- | --- | --- | --- |
-| A ✓ citation means | the cited ID exists | the quoted words are in that passage | [`cite_sound`](core/LAWS.bend), proven in CI |
-| Model calls per question | 3 or more | 1 | [`answer.py`](src/heph/answer.py) |
-| Default model | hosted (Pollinations) | your local server | [Configuration](docs/configuration.md) |
-| Downloads or runs | llama.cpp, models, updates, shell, plugins | nothing | [Architecture](docs/architecture.md#zero-remote-code-execution) |
-| Install size (Linux, Python 3.14) | 144 packages, 5.8 GiB | 8 packages, 14 MiB | measured in an empty venv |
-| Heph's own code | 2.55 MB Python | 67 KB Python + 46 KB Bend | [`src/heph`](src/heph), [`core`](core) |
-| Interface | full-screen TUI | inline CLI | screenshot above |
-
-## Armory layout
-
-An armory is a normal folder. Every visible file in it is material:
-
-```text
-~/Documents/[folder]/
-├── [file].pdf            # PDFs, Office docs, notes, code to cite
-├── [subfolder]/          # Subfolders count too
-│   └── [file].md
-├── .harnessignore        # Optional: files to skip (gitignore-style)
-└── .harness/             # Local Heph state
-    ├── armory.toml       # Armory marker
-    ├── index/            # Retrieval index, one cache per file
-    ├── chats/            # Saved chats
-    └── history           # Input history
-```
-
-| Command | Armory |
-| --- | --- |
-| `heph init` | the current folder |
-| `heph init [name]` | `~/.armories/[name]` |
-| `heph` | the current folder, or a list to pick from |
-| `heph [name]` | `~/.armories/[name]` |
-
-Copy or sync the folder to move it between machines; configure the model server again on
-each machine.
-
-Read [Armories](docs/armories.md) for storage, indexing, and ignore rules.
-
-## Installation
-
-> [!NOTE]
-> Heph is currently in beta, so unexpected issues may occur. Please report them if
-> they have not already been reported.
-
-### Using UV (recommended)
-
-Install UV:
+Install [uv](https://docs.astral.sh/uv/):
 
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh
@@ -89,75 +23,77 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 Then Heph:
 
 ```bash
-uv tool install heph@latest
+git clone https://github.com/gildrb/heph-agent
+cd heph-agent
+uv sync
+uv run heph
 ```
 
-### Using Pip
+### Homebrew
 
 ```bash
-pip install heph
+brew install gildrb/heph/heph
 ```
 
-### Using mise
+To update a source checkout:
 
-```bash
-mise use -g pypi:heph
+```sh
+git pull
+uv sync
+uv run heph
 ```
 
-Heph needs Python 3.14+ on Linux or macOS.
+## Use an armory
 
-| Reads | How |
+```sh
+cd ~/Documents/contracts    # any folder of files
+heph init                   # make it an armory
+heph                        # ask questions
+```
+
+| Command | Does |
 | --- | --- |
-| PDF | text per page (bundled PDFium); citations show the page |
-| DOCX, PPTX, XLSX, ODT, ODS | built-in XML parsing |
-| Markdown, notes, code, CSV | UTF-8 text |
+| `heph` | opens the armory in this folder, or lists armories to pick from |
+| `heph init [name]` | makes this folder an armory, or creates `~/.armories/[name]` |
+| `/init`, `/armory`, `/add [path]` | create, switch, or copy files in, inside `heph` |
+| `heph ask [armory] "question" --json` | one answer, for scripts |
 
-Convert `.doc`, `.ppt`, `.xls`, `.odp`, and `.rtf` to PDF, DOCX, PPTX or XLSX first.
-Scanned PDFs need OCR first.
+Answers cite evidence as `[E1: "quoted words"]`, and Heph checks each quote against that
+passage: ✓ found, ✗ not found or unknown passage, ? no quote.
 
-### Model server
+Heph expects an OpenAI-compatible server at `http://127.0.0.1:8080/v1` (llama.cpp
+`llama-server`); vLLM, SGLang and Ollama work too. Set `base_url` in
+`~/.config/heph/config.toml`; see [Configuration](docs/configuration.md).
 
-Heph talks to any OpenAI-compatible server. Local servers need no key.
+## Compared to v0.0.63
 
-| Server | `base_url` |
-| --- | --- |
-| llama.cpp `llama-server` | `http://127.0.0.1:8080/v1` (default) |
-| vLLM | `http://127.0.0.1:8000/v1` |
-| SGLang | `http://127.0.0.1:30000/v1` |
-| Ollama | `http://127.0.0.1:11434/v1` |
+| | v0.0.63 | Now | Proof |
+| --- | --- | --- | --- |
+| A ✓ citation means | the cited passage was retrieved | the quoted words are in it | [`cite_sound`](core/LAWS.bend), proven in CI |
+| Model calls per question | 2 to 27 | 1 | [`answer.py`](src/heph/answer.py) |
+| Default model | none until you pick one | your local server, no key | [Configuration](docs/configuration.md) |
+| Model tools | files and web; shell and plugins if trusted | none | [Architecture](docs/architecture.md#zero-remote-code-execution) |
+| Downloads at run time | llama.cpp builds, models, model lists | nothing | same |
+| Install (Linux, empty venv) | 42 packages, 46 MiB | 8 packages, 14 MiB | `uv sync` / `uv pip install` |
+| Heph's own code | 1.76 MB Python | 67 KB Python + 46 KB Bend | [`src/heph`](src/heph), [`core`](core) |
+| Armory | files go in `materials/` | any folder | [Armories](docs/armories.md) |
+| Interface | full-screen TUI | inline command line | screenshot above |
 
-Set it in `~/.config/heph/config.toml` or with `HEPH_BASE_URL`; `heph config` shows the
-settings in use. See [Configuration](docs/configuration.md).
+## Design
 
-### Updating
+Python (`src/heph`) reads files, talks to the model and prints answers. A Bend core
+(`core/`) chunks documents, ranks passages with BM25 and checks quotes. Nine laws in
+`core/LAWS.bend`, such as "a quote marked ✓ is byte-for-byte in its passage", are proven by
+`bend core/PROOF.bend` in CI. The model has no tools, the only network peer is your
+`base_url`, and nothing is downloaded. See [Architecture](docs/architecture.md).
 
-```bash
-uv tool upgrade heph
+## Development
+
+```sh
+uv sync --group dev
+uv run ruff check
+uv run ty check
+uv run vulture
 ```
 
-Check the installed version:
-
-```bash
-heph --version
-```
-
-## Docs
-
-[Getting started](docs/getting-started.md)<br>
-[Armories](docs/armories.md)<br>
-[Configuration](docs/configuration.md)<br>
-[Privacy](docs/privacy.md)<br>
-[Architecture](docs/architecture.md)<br>
-[Troubleshooting](docs/troubleshooting.md)
-
-## Contributing
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for local development, the proof gate, and pull
-request guidelines.
-
-## Safety
-
-- No telemetry, crash reports, or update checks.
-- Beyond the package itself, Heph downloads nothing: no engines, models, plugins, or updates.
-- The model gets no tools: no shell, no files, no web.
-- The only network peer is your `base_url`; the only subprocess is Heph's own core.
+See `CONTRIBUTING.md` and `SECURITY.md` for project policy.

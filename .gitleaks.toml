@@ -1,8 +1,0 @@
-title = "Heph Gitleaks Config"
-description = "Secret scanning configuration - extends default rules with project-specific allowlists."
-
-[allowlist]
-  description = "Global allowlist for false positives"
-  paths = [
-    '''\.env\.example$''',
-  ]

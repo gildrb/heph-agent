@@ -5,16 +5,18 @@ Heph checks each quoted citation against the evidence it came from.
 
 ## Install
 
-Heph needs Python 3.14+ on Linux or macOS.
+Heph needs Python 3.14 and clang 14+ on Linux or macOS: the first build compiles its core
+from `core/build/heph-core.c`.
 
 ```bash
-uv tool install heph    # or: pip install heph
-heph --version
+git clone https://github.com/gildrb/heph-agent
+cd heph-agent
+uv sync
+uv run heph --version
 ```
 
-Wheels ship a prebuilt `heph-core` binary for Linux x86_64 and arm64 (manylinux) and
-macOS arm64. On other platforms pip builds it from the source distribution, which needs
-clang 14 or newer. Heph downloads nothing at install or at run time.
+Or `brew install gildrb/heph/heph`. Beyond the source and its Python dependencies, Heph
+downloads nothing at install or at run time.
 
 ## Start a model server
 

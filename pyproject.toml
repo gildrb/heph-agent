@@ -1,6 +1,6 @@
 [project]
 name = "heph"
-version = "0.0.59"
+version = "0.0.64"
 description = "Local document agent for accurate, cited answers."
 readme = "README.md"
 license = "MIT"
@@ -73,23 +73,6 @@ cache-keys = [
     { file = "hatch_build.py" },
     { file = "core/build/heph-core.c" },
 ]
-
-# Release wheels: one py3-none wheel per platform, built from the sdist (which ships the C).
-[tool.cibuildwheel]
-build = "cp314-*"
-skip = "*-musllinux_*"
-archs = ["native"]
-test-command = [
-    "heph --version",
-    'export HEPH_ARMORY_HOME="$(mktemp -d)" XDG_CONFIG_HOME="$(mktemp -d)"',
-    "heph init smoke",
-    'printf "Heph answers questions.\n" > "$HEPH_ARMORY_HOME/smoke/note.md"',
-    "heph index smoke",
-]
-
-[tool.cibuildwheel.linux]
-# Bend's C needs clang; the manylinux image ships only gcc.
-before-all = "dnf install -y clang"
 
 [tool.ruff]
 line-length = 99
