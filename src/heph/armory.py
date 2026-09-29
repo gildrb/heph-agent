@@ -1,22 +1,27 @@
-"""Armory layout, init/validate/resolve, material discovery and safe material reads."""
+"""Armory layout, init/validate/resolve, material discovery, safe reads and adding files.
+
+An armory is any folder with a `.harness/armory.toml` marker: every visible file below it is
+material, except `.harness/` itself and what `.harnessignore` excludes.
+"""
 
 import fnmatch
 import os
+import shutil
 import stat
+import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import NoReturn
 
 from heph import HephError
 
-MATERIALS = "materials"
 INTERNAL = ".harness"
 MARKER = f"{INTERNAL}/armory.toml"
 INDEX = f"{INTERNAL}/index"
 CHATS = f"{INTERNAL}/chats"
 IGNORE_FILE = ".harnessignore"
-DEFAULT_IGNORE = (".git/", "__pycache__/", ".DS_Store")
-_DIRS = (MATERIALS, INTERNAL, INDEX, CHATS)
+DEFAULT_IGNORE = (".git/", "__pycache__/", "node_modules/", ".DS_Store")
+_DIRS = (INTERNAL, INDEX, CHATS)
 _DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
 
 
@@ -24,14 +29,20 @@ def armory_home() -> Path:
     return Path(os.environ.get("HEPH_ARMORY_HOME") or Path.home() / ".armories")
 
 
-def _target(name_or_path: str) -> Path:
+def _target(name_or_path: str | None) -> Path:
+    if name_or_path is None:
+        return Path.cwd()
     if os.sep in name_or_path or name_or_path.startswith((".", "~")):
         return Path(name_or_path).expanduser().absolute()
     return armory_home() / name_or_path
 
 
-def init(name_or_path: str) -> Path:
+def init(name_or_path: str | None) -> Path:
+    """Makes a folder an armory: None is the current folder, a bare name lives in the home."""
     root = _target(name_or_path)
+    resolved = root.resolve()
+    if resolved in {Path.home().resolve(), Path(resolved.anchor)}:
+        raise HephError(f"Refusing to make {root} an armory; use a folder of documents inside it")
     if (root / MARKER).exists():
         raise HephError(f"{root} is already an armory")
     if root.exists() and not root.is_dir():
@@ -60,19 +71,29 @@ def validate(root: Path) -> Path:
     return resolved
 
 
+def here() -> Path | None:
+    """The current folder if it is an armory."""
+    cwd = Path.cwd()
+    return validate(cwd) if (cwd / MARKER).is_file() else None
+
+
+def known() -> list[Path]:
+    """Armories in the armory home, sorted by name."""
+    home = armory_home()
+    found = home.iterdir() if home.is_dir() else ()
+    return sorted((p for p in found if (p / MARKER).is_file()), key=lambda p: p.name)
+
+
 def resolve(arg: str | None) -> Path:
     """Resolves an armory argument: the cwd, a path (has a `/` or starts with `.`/`~`), or a
     name under the armory home; a bare name falls back to a path only if no such armory exists.
     """
     if arg is None:
-        cwd = Path.cwd()
-        if (cwd / MARKER).is_file():
-            return validate(cwd)
-        home = armory_home()
-        found = home.iterdir() if home.is_dir() else ()
-        names = sorted(p.name for p in found if (p / MARKER).is_file())
-        known = f" Known armories in {home}: {', '.join(names)}." if names else ""
-        raise HephError(f"No armory given and {cwd} is not an armory.{known}")
+        if (cwd := here()) is not None:
+            return cwd
+        names = ", ".join(p.name for p in known())
+        hint = f" Or name one: {names}." if names else ""
+        raise HephError(f"{Path.cwd()} is not an armory. Run `heph init` to make it one.{hint}")
     path = Path(arg).expanduser()
     named = armory_home() / arg
     is_path = os.sep in arg or arg.startswith((".", "~"))
@@ -110,22 +131,21 @@ def _raise(exc: OSError) -> NoReturn:
 
 
 def materials(root: Path) -> list[str]:
-    """Visible material files as sorted armory-relative POSIX paths (`materials/...`)."""
+    """Visible files below the armory root as sorted armory-relative POSIX paths."""
     patterns = _patterns(root)
-    base = root / MATERIALS
     found: list[str] = []
-    for current, dirs, files in os.walk(base, onerror=_raise):
-        here = Path(current)
-        rel = here.relative_to(root).parts
+    for current, dirs, files in os.walk(root, onerror=_raise):
+        folder = Path(current)
+        rel = folder.relative_to(root).parts
         dirs[:] = sorted(
             name
             for name in dirs
             if not name.startswith(".")
-            and not (here / name).is_symlink()
+            and not (folder / name).is_symlink()
             and not _ignored((*rel, name), patterns, is_dir=True)
         )
         for name in files:
-            path = here / name
+            path = folder / name
             if name.startswith(".") or _ignored((*rel, name), patterns, is_dir=False):
                 continue
             if stat.S_ISREG(path.lstat().st_mode):
@@ -155,3 +175,32 @@ def read_material(root: Path, rel: str, limit: int) -> bytes:
     if len(data) > limit:
         raise HephError(f"{rel} exceeds the {limit // 2**20} MB size limit")
     return data
+
+
+def add(root: Path, source: Path) -> str:
+    """Copies a file or folder into the armory root; never overwrites, all or nothing."""
+    if not source.exists():
+        raise HephError(f"No such file or folder: {source}")
+    resolved = source.resolve()
+    if resolved.is_relative_to(root):
+        raise HephError(f"{source} is already in the armory")
+    if root.is_relative_to(resolved):
+        raise HephError(f"{source} contains the armory")
+    if not (resolved.is_dir() or resolved.is_file()):
+        raise HephError(f"{source} is not a regular file or folder")
+    target = root / resolved.name
+    if target.exists() or target.is_symlink():
+        raise HephError(f"{target.name} already exists in the armory")
+    staging = Path(tempfile.mkdtemp(prefix="add-", dir=root / INTERNAL))
+    try:
+        copy = staging / resolved.name
+        if resolved.is_dir():
+            shutil.copytree(resolved, copy, symlinks=True)
+        else:
+            shutil.copy2(resolved, copy)
+        copy.rename(target)
+    except OSError as exc:
+        raise HephError(f"Cannot copy {source}: {exc}") from exc
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+    return target.name

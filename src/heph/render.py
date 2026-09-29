@@ -124,7 +124,8 @@ class Renderer:
                 line.append(location(c.source, c.page) + " ", style="dim")
             line.append(_MARK[c.status], style=_STYLE[c.status])
             if c.quote:
-                line.append(f' "{c.quote}"', style="italic")
+                # verification ignores whitespace runs, so show the quote on one line
+                line.append(f' "{" ".join(c.quote.split())}"', style="italic")
             if c.status in _NOTE:
                 line.append(f" ({_NOTE[c.status]})", style=_STYLE[c.status])
             self.console.print(line)
@@ -149,7 +150,8 @@ class Renderer:
             self.console.print(line, overflow="ellipsis", no_wrap=True)
 
     def report(self, report: Report) -> None:
-        summary = f"{report.files} files · {report.built} indexed · {report.removed} removed"
+        files = f"{report.files} file{'' if report.files == 1 else 's'}"
+        summary = f"{files} · {report.built} indexed · {report.removed} removed"
         if report.skipped:
             summary += f" · {len(report.skipped)} skipped"
         self.console.print(Text(summary, style="dim"))

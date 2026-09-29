@@ -1,5 +1,3 @@
-<!-- Managed by scripts/sync_docs.py. Do not edit directly. -->
-
 <p align="center">
   <img alt="Heph" src="assets/logo-auto.svg" width="280">
 </p>
@@ -9,8 +7,8 @@
 </p>
 
 <p align="center">
-  <a href="https://raw.githubusercontent.com/gildrb/heph/main/assets/app-screenshot.png?v=c83c45bf619c">
-    <img alt="Heph TUI" src="assets/app-screenshot.png?v=c83c45bf619c" width="100%">
+  <a href="https://raw.githubusercontent.com/gildrb/heph-agent/main/assets/app-screenshot.png?v=77d812a64833">
+    <img alt="Heph answering a question with a verified citation" src="assets/app-screenshot.png?v=77d812a64833" width="100%">
   </a>
 </p>
 
@@ -23,42 +21,56 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 # Install Heph
 uv tool install heph@latest
 
-# Create an armory for your files
-heph armory init [name]
+# Make a folder of your files an armory
+cd ~/Documents/[folder]
+heph init
 
-# Add materials that Heph can answer from
-cp ~/Downloads/[file] ~/.armories/[name]/materials/
-
-# Start Heph in that armory
-heph [name]
+# Start Heph (it expects a model server at http://127.0.0.1:8080/v1)
+heph
 ```
+
+No folder yet? Run `heph` anywhere, then `/init [name]` and `/add [file]`.
+
+## Compared to Heph 0.0.59
+
+| | 0.0.59 | Now | Proof |
+| --- | --- | --- | --- |
+| A ✓ citation means | the cited ID exists | the quoted words are in that passage | [`cite_sound`](core/LAWS.bend), proven in CI |
+| Model calls per question | 3 or more | 1 | [`answer.py`](src/heph/answer.py) |
+| Default model | hosted (Pollinations) | your local server | [Configuration](docs/configuration.md) |
+| Downloads or runs | llama.cpp, models, updates, shell, plugins | nothing | [Architecture](docs/architecture.md#zero-remote-code-execution) |
+| Install size (Linux, Python 3.14) | 144 packages, 5.8 GiB | 8 packages, 14 MiB | measured in an empty venv |
+| Heph's own code | 2.55 MB Python | 67 KB Python + 46 KB Bend | [`src/heph`](src/heph), [`core`](core) |
+| Interface | full-screen TUI | inline CLI | screenshot above |
 
 ## Armory layout
 
-An armory is a normal folder:
+An armory is a normal folder. Every visible file in it is material:
 
 ```text
-~/.armories/[name]/
-├── materials/            # PDFs, Office docs, notes, code to cite
-│   ├── [file].pdf
+~/Documents/[folder]/
+├── [file].pdf            # PDFs, Office docs, notes, code to cite
+├── [subfolder]/          # Subfolders count too
 │   └── [file].md
-├── .harness/             # Local Heph state
-│   ├── armory.toml       # Armory marker
-│   ├── rag_index.json    # Retrieval index
-│   ├── memory.json       # Armory memory
-│   ├── chats/            # Saved sessions
-│   ├── traces/           # JSONL traces when enabled
-│   ├── usage/            # Token and cost snapshots
-│   └── ignore            # Indexing ignore rules
-└── README.md             # Armory notes
+├── .harnessignore        # Optional: files to skip (gitignore-style)
+└── .harness/             # Local Heph state
+    ├── armory.toml       # Armory marker
+    ├── index/            # Retrieval index, one cache per file
+    ├── chats/            # Saved chats
+    └── history           # Input history
 ```
 
-`materials/` holds files Heph can index and cite. `.harness/` holds local state:
-the retrieval index, memory, chats, traces, usage snapshots, and ignore rules.
-Copy or sync the armory folder to move work between machines; configure provider
-credentials again on each machine.
+| Command | Armory |
+| --- | --- |
+| `heph init` | the current folder |
+| `heph init [name]` | `~/.armories/[name]` |
+| `heph` | the current folder, or a list to pick from |
+| `heph [name]` | `~/.armories/[name]` |
 
-Read [Armories](docs/armories.md) for storage, indexing, and memory details.
+Copy or sync the folder to move it between machines; configure the model server again on
+each machine.
+
+Read [Armories](docs/armories.md) for storage, indexing, and ignore rules.
 
 ## Installation
 
@@ -86,23 +98,41 @@ uv tool install heph@latest
 pip install heph
 ```
 
-The default install is intentionally lean: one install, with no optional
-extras, ML runtime, or model downloads. The following measurements are total
-Linux virtualenv sizes (including workspace packages), not deltas.
+### Using mise
 
-| Profile | Adds | Total installed Linux profile | Without it |
-| --- | --- | --- | --- |
-| default | Native extraction + lexical retrieval | 43 distributions / 46.3 MiB | — |
+```bash
+mise use -g pypi:heph
+```
 
-Supported native document formats are `.docx`, `.pptx`, `.xlsx`, `.odt`, and
-`.ods`, with PDF text extraction through `pdftotext` or bundled PDFium.
-Convert `.doc`, `.ppt`, `.xls`, `.odp`, and `.rtf` to `.docx`, `.pptx`, `.xlsx`,
-PDF, or plain text before indexing.
+Heph needs Python 3.14+ on Linux or macOS.
+
+| Reads | How |
+| --- | --- |
+| PDF | text per page (bundled PDFium); citations show the page |
+| DOCX, PPTX, XLSX, ODT, ODS | built-in XML parsing |
+| Markdown, notes, code, CSV | UTF-8 text |
+
+Convert `.doc`, `.ppt`, `.xls`, `.odp`, and `.rtf` to PDF, DOCX, PPTX or XLSX first.
+Scanned PDFs need OCR first.
+
+### Model server
+
+Heph talks to any OpenAI-compatible server. Local servers need no key.
+
+| Server | `base_url` |
+| --- | --- |
+| llama.cpp `llama-server` | `http://127.0.0.1:8080/v1` (default) |
+| vLLM | `http://127.0.0.1:8000/v1` |
+| SGLang | `http://127.0.0.1:30000/v1` |
+| Ollama | `http://127.0.0.1:11434/v1` |
+
+Set it in `~/.config/heph/config.toml` or with `HEPH_BASE_URL`; `heph config` shows the
+settings in use. See [Configuration](docs/configuration.md).
 
 ### Updating
 
 ```bash
-heph update
+uv tool upgrade heph
 ```
 
 Check the installed version:
@@ -115,25 +145,19 @@ heph --version
 
 [Getting started](docs/getting-started.md)<br>
 [Armories](docs/armories.md)<br>
-[CLI reference](docs/cli-reference.md)<br>
 [Configuration](docs/configuration.md)<br>
-[Models](docs/models.md)<br>
-[Trust and ownership](docs/trust.md)<br>
 [Privacy](docs/privacy.md)<br>
 [Architecture](docs/architecture.md)<br>
-[SDK](docs/sdk.md)<br>
-[Troubleshooting](docs/troubleshooting.md)<br>
-[Developers](docs/developers.md)<br>
-[Runbooks](docs/runbooks.md)
+[Troubleshooting](docs/troubleshooting.md)
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for local development, tests, and pull request
-guidelines.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for local development, the proof gate, and pull
+request guidelines.
 
 ## Safety
 
-Heph does not collect telemetry or send crash reports.
-
-Model-generated terminal commands are not exposed as a default agent tool. Armory
-plugins should only be used in armories you trust.
+- No telemetry, crash reports, or update checks.
+- Beyond the package itself, Heph downloads nothing: no engines, models, plugins, or updates.
+- The model gets no tools: no shell, no files, no web.
+- The only network peer is your `base_url`; the only subprocess is Heph's own core.

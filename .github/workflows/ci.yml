@@ -67,7 +67,7 @@ jobs:
           "$heph" --version
           "$heph" init smoke
           printf 'Heph answers questions from files.\n\nCitations are verified.\n' \
-            > "$HEPH_ARMORY_HOME/smoke/materials/note.md"
+            > "$HEPH_ARMORY_HOME/smoke/note.md"
           "$heph" index smoke
 
   secret-scan:

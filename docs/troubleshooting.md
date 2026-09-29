@@ -24,6 +24,14 @@ name of the variable that holds it, or `api_key_file` to a file that holds it. H
 with an error when `api_key_env` names an unset variable or `api_key_file` is unreadable
 or empty.
 
+## Not an armory
+
+`heph index` and `heph ask` need an armory: run them inside one, pass its name or path, or
+run `heph init` first. `heph` alone always opens and lists the armories to pick from.
+
+Armories from older Heph versions keep their marker in `.hephaion/` and are not listed.
+Run `heph init` in that folder; its files are kept and the old state is ignored.
+
 ## A file is not indexed
 
 `heph index` lists every material it skipped and why: unsupported legacy format, binary

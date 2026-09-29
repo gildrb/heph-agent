@@ -3,8 +3,10 @@
 import argparse
 import json
 import readline
+import shlex
 import sys
 from collections.abc import Sequence
+from dataclasses import dataclass
 from importlib.metadata import version
 from pathlib import Path
 
@@ -20,17 +22,20 @@ from heph.session import Chat
 
 _PROMPT = "\N{SINGLE RIGHT-POINTING ANGLE QUOTATION MARK} "
 _COMMANDS = frozenset({"init", "index", "ask", "config", "repl"})
-_HELP = """/help     show this help
-/new      start a new chat (forget the conversation so far)
-/sources  list the evidence given to the model for the last answer
-/index    re-index the armory's materials
-/exit     quit (Ctrl-D works too)"""
+_HELP = """/armory [name]  list armories, or open one by number, name or path
+/init [name]    make this folder an armory, or create one in the armory home
+/add <path>...  copy files or folders into the armory, then index
+/new            start a new chat (forget the conversation so far)
+/sources        list the evidence given to the model for the last answer
+/index          re-index the armory
+/help           show this help
+/exit           quit (Ctrl-D works too)"""
 
 
 class Args(argparse.Namespace):
     command: str | None
     version: bool
-    target: str
+    target: str | None
     armory: str | None
     question: list[str]
     json: bool
@@ -44,8 +49,8 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--version", action="store_true", help="print the version and exit")
     commands = parser.add_subparsers(dest="command", metavar="{init,index,ask,config}")
-    init = commands.add_parser("init", help="create an armory (name or path)")
-    init.add_argument("target", metavar="name|path")
+    init = commands.add_parser("init", help="make this folder (or a name or path) an armory")
+    init.add_argument("target", nargs="?", metavar="name|path")
     index = commands.add_parser("index", help="index an armory's materials")
     index.add_argument("armory", nargs="?")
     question = commands.add_parser("ask", help="answer one question with citations")
@@ -98,48 +103,144 @@ def _turn(engine: Engine, chat: Chat, question: str, renderer: Renderer) -> Resu
     return result
 
 
+@dataclass(slots=True)
+class _Open:
+    """The armory a session works in."""
+
+    root: Path
+    index: Index
+    chat: Chat
+    engine: Engine | None = None
+    last: Result | None = None
+
+
+def _history(root: Path) -> Path:
+    path = root / armory.INTERNAL / "history"
+    if path.is_symlink():
+        raise HephError(f"Refusing symlinked history file {path}")
+    return path
+
+
 class _Repl:
-    def __init__(self, root: Path, out: Renderer) -> None:
-        self.root = root
+    def __init__(self, out: Renderer) -> None:
         self.out = out
         self.config = load()
-        self.index = _index(root, out)
-        self.engine: Engine | None = None
-        self.chat = Chat.new(root)
-        self.last: Result | None = None
+        self.open: _Open | None = None
+
+    def current(self) -> _Open:
+        if self.open is None:
+            raise HephError("No armory open: /armory lists them, /init creates one")
+        return self.open
+
+    def enter(self, root: Path) -> None:
+        """Opens an armory: indexes it and swaps in its input history."""
+        index = _index(root, self.out)
+        history = _history(root)
+        self.save_history()
+        readline.clear_history()
+        if history.exists():
+            readline.read_history_file(history)
+        self.open = _Open(root, index, Chat.new(root))
+        self.out.note(
+            f"heph · {root.name} · {len(index.chunks)} chunks · {self.config.base_url} · /help"
+        )
+
+    def save_history(self) -> None:
+        if self.open is not None:
+            readline.write_history_file(_history(self.open.root))
+
+    def armories(self) -> list[Path]:
+        roots = armory.known()
+        if not roots:
+            self.out.note(f"No armories in {armory.armory_home()} yet.")
+        for number, root in enumerate(roots, 1):
+            is_open = self.open is not None and self.open.root == root.resolve()
+            self.out.note(f"  {number}  {root.name}{'  (open)' if is_open else ''}", "")
+        return roots
+
+    def welcome(self) -> None:
+        self.out.note(f"heph · {Path.cwd()} is not an armory · /help")
+        pick = "Type a number or name to open one, " if self.armories() else ""
+        self.out.note(f"{pick}/init to make this folder an armory, /init <name> to create one.")
+
+    def pick(self, choice: str) -> None:
+        if choice.isdigit():
+            roots = armory.known()
+            number = int(choice)
+            if not 1 <= number <= len(roots):
+                raise HephError(f"No armory number {number}; /armory lists them")
+            self.enter(armory.validate(roots[number - 1]))
+        else:
+            self.enter(armory.resolve(choice))
+
+    def create(self, target: str | None) -> None:
+        if target is None and (cwd := armory.here()) is not None:
+            self.out.note(f"{cwd} is already an armory.")
+            self.enter(cwd)
+            return
+        root = armory.init(target)
+        self.out.note(f"Created armory {root}.")
+        self.enter(root)
+        if not self.current().index.chunks:
+            self.out.note(f"Add files with /add <path>, or copy them into {root}.")
+
+    def reindex(self, current: _Open) -> None:
+        current.index, current.engine = _index(current.root, self.out), None
+
+    def add(self, arg: str) -> None:
+        current = self.current()
+        try:
+            paths = shlex.split(arg)
+        except ValueError as exc:
+            raise HephError(f"Cannot parse {arg!r}: {exc}") from exc
+        if not paths:
+            raise HephError("Usage: /add <file or folder> ... (quote paths with spaces)")
+        for count, raw in enumerate(paths):
+            try:
+                name = armory.add(current.root, Path(raw).expanduser())
+            except HephError:
+                if count:
+                    self.reindex(current)
+                raise
+            self.out.note(f"Added {name}")
+        self.reindex(current)
 
     def command(self, line: str) -> bool:
         """Handles a slash command; returns False to quit."""
-        match line.split(" ", 1)[0]:
+        name, _, rest = line.partition(" ")
+        arg = rest.strip()
+        match name:
             case "/exit" | "/quit":
                 return False
             case "/help":
                 self.out.note(_HELP, style="")
+            case "/armory" if arg:
+                self.pick(arg)
+            case "/armory":
+                _ = self.armories()
+            case "/init":
+                self.create(arg or None)
+            case "/add":
+                self.add(arg)
             case "/new":
-                self.chat, self.last = Chat.new(self.root), None
+                current = self.current()
+                current.chat, current.last = Chat.new(current.root), None
                 self.out.note("New chat.")
             case "/sources":
-                self.out.sources(self.last.evidence if self.last else ())
+                last = self.current().last
+                self.out.sources(last.evidence if last else ())
             case "/index":
-                self.index, self.engine = _index(self.root, self.out), None
+                self.reindex(self.current())
             case command:
                 self.out.note(f"Unknown command {command}; /help lists commands.", "yellow")
         return True
 
     def question(self, line: str) -> None:
-        try:
-            self.engine = self.engine or _engine(self.config, self.index)
-            self.last = _turn(self.engine, self.chat, line, self.out)
-        except HephError as exc:
-            self.out.note(f"error: {exc}", "red")
-        except KeyboardInterrupt:
-            self.out.note("interrupted", "yellow")
+        current = self.current()
+        current.engine = current.engine or _engine(self.config, current.index)
+        current.last = _turn(current.engine, current.chat, line, self.out)
 
     def loop(self) -> None:
-        chunks = len(self.index.chunks)
-        self.out.note(
-            f"heph · {self.root.name} · {chunks} chunks · {self.config.base_url} · /help"
-        )
         while True:
             try:
                 line = input(_PROMPT).strip()
@@ -149,33 +250,42 @@ class _Repl:
             except EOFError:
                 self.out.console.print()
                 return
-            if line.startswith("/"):
-                if not self.command(line):
-                    return
-            elif line:
-                self.question(line)
+            try:
+                if line.startswith("/"):
+                    if not self.command(line):
+                        return
+                elif line and self.open is None:
+                    self.pick(line)
+                elif line:
+                    self.question(line)
+            except HephError as exc:
+                self.out.note(f"error: {exc}", "red")
+            except KeyboardInterrupt:
+                self.out.note("interrupted", "yellow")
 
 
-def _repl(root: Path, out: Renderer) -> None:
-    history = root / armory.INTERNAL / "history"
-    if history.is_symlink():
-        raise HephError(f"Refusing symlinked history file {history}")
-    if history.exists():
-        readline.read_history_file(history)
+def _repl(arg: str | None, out: Renderer) -> None:
     readline.set_history_length(1000)
-    repl = _Repl(root, out)
+    repl = _Repl(out)
+    if arg is not None:
+        repl.enter(armory.resolve(arg))
+    elif (cwd := armory.here()) is not None:
+        repl.enter(cwd)
+    else:
+        repl.welcome()
     try:
         repl.loop()
     finally:
-        readline.write_history_file(history)
+        repl.save_history()
 
 
 def _run(args: Args, out: Renderer, err: Renderer) -> None:
     match args.command:
         case "init":
             root = armory.init(args.target)
-            out.note(f"Created {root}. Put files in {root / armory.MATERIALS}, then run:", "")
-            out.note(f"  heph index {args.target}", "")
+            run = "heph" if args.target is None else f"heph {args.target}"
+            out.note(f"Created armory {root}. Every file in it is material.", "")
+            out.note(f"Run `{run}` to ask questions; add files any time.", "")
         case "index":
             _index(armory.resolve(args.armory), out)
         case "ask":
@@ -203,7 +313,7 @@ def _run(args: Args, out: Renderer, err: Renderer) -> None:
             ):
                 out.note(f"{key} = {value}", "")
         case _:
-            _repl(armory.resolve(args.armory), out)
+            _repl(args.armory, out)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
