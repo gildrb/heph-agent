@@ -10,7 +10,7 @@ If you discover a security vulnerability in Heph, please report it privately.
 
 **Do not** open a public issue.
 
-Instead, send an email to: hi@gildrb.com
+Instead, send an email to: mail@gildrb.com
 
 Please include:
 - A description of the vulnerability

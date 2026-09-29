@@ -5,9 +5,9 @@ description = "Local document agent for accurate, cited answers."
 readme = "README.md"
 license = "MIT"
 authors = [
-    { name = "Gil", email = "hi@gildrb.com" },
+    { name = "Gil", email = "mail@gildrb.com" },
 ]
-requires-python = ">=3.13"
+requires-python = ">=3.14"
 keywords = ["cli", "citations", "documents", "llm", "local", "retrieval"]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -16,7 +16,7 @@ classifiers = [
     "Operating System :: POSIX :: Linux",
     "Programming Language :: Python",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Utilities",
 ]
 dependencies = [
@@ -27,9 +27,9 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/gildrb/heph"
-Repository = "https://github.com/gildrb/heph"
-Issues = "https://github.com/gildrb/heph/issues"
+Homepage = "https://github.com/gildrb/heph-agent"
+Repository = "https://github.com/gildrb/heph-agent"
+Issues = "https://github.com/gildrb/heph-agent/issues"
 
 [project.scripts]
 heph = "heph.cli:main"
@@ -76,14 +76,14 @@ cache-keys = [
 
 # Release wheels: one py3-none wheel per platform, built from the sdist (which ships the C).
 [tool.cibuildwheel]
-build = "cp313-*"
+build = "cp314-*"
 skip = "*-musllinux_*"
 archs = ["native"]
 test-command = [
     "heph --version",
     'export HEPH_ARMORY_HOME="$(mktemp -d)" XDG_CONFIG_HOME="$(mktemp -d)"',
     "heph init smoke",
-    'printf "Heph answers questions.\n" > "$HEPH_ARMORY_HOME/smoke/materials/note.md"',
+    'printf "Heph answers questions.\n" > "$HEPH_ARMORY_HOME/smoke/note.md"',
     "heph index smoke",
 ]
 
@@ -93,7 +93,7 @@ before-all = "dnf install -y clang"
 
 [tool.ruff]
 line-length = 99
-target-version = "py313"
+target-version = "py314"
 src = ["src"]
 
 [tool.ruff.lint]
@@ -152,7 +152,7 @@ indent-style = "space"
 line-ending = "lf"
 
 [tool.ty.environment]
-python-version = "3.13"
+python-version = "3.14"
 
 [tool.ty.src]
 include = ["src"]

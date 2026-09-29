@@ -172,7 +172,7 @@ def _load(path: Path, source: str) -> _Doc | None:
     try:
         with os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW), "rb") as file:
             return _decode(json.load(file), source)
-    except (OSError, ValueError):
+    except OSError, ValueError:
         return None
 
 

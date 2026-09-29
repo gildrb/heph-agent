@@ -1,5 +1,5 @@
 blank_issues_enabled: false
 contact_links:
   - name: Question
-    url: https://github.com/gildrb/heph/discussions
+    url: https://github.com/gildrb/heph-agent/discussions
     about: Ask a question about Heph usage or configuration
