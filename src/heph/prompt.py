@@ -246,10 +246,12 @@ class Input:
         return self._session.prompt(PROMPT)
 
     def ask(self, label: str, default: str = "") -> str:
-        """One plain answer, outside history and completion; Enter alone keeps the default."""
+        """One plain answer, outside history and completion. The default shows dimmed until
+        the user types, and Enter on an empty line takes it."""
         if not sys.stdin.isatty():
             return input(label) or default
-        return prompt(label, default=default, style=_STYLE)
+        hint: StyleAndTextTuples = [("class:pick.detail", default)]
+        return prompt(label, placeholder=hint, style=_STYLE) or default
 
     def path(self, label: str) -> str:
         """One file or folder path, completed as it is typed."""
