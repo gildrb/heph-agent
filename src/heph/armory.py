@@ -37,11 +37,16 @@ def _target(name_or_path: str | None) -> Path:
     return armory_home() / name_or_path
 
 
+def refused(root: Path) -> bool:
+    """Folders that must not become armories: the home folder and the filesystem root."""
+    resolved = root.resolve()
+    return resolved in {Path.home().resolve(), Path(resolved.anchor)}
+
+
 def init(name_or_path: str | None) -> Path:
     """Makes a folder an armory: None is the current folder, a bare name lives in the home."""
     root = _target(name_or_path)
-    resolved = root.resolve()
-    if resolved in {Path.home().resolve(), Path(resolved.anchor)}:
+    if refused(root):
         raise HephError(f"Refusing to make {root} an armory; use a folder of documents inside it")
     if (root / MARKER).exists():
         raise HephError(f"{root} is already an armory")

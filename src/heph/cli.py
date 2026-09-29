@@ -159,9 +159,15 @@ class _Repl:
         return roots
 
     def welcome(self) -> None:
-        self.out.note(f"heph · {Path.cwd()} is not an armory · /help")
-        pick = "Type a number or name to open one, " if self.armories() else ""
-        self.out.note(f"{pick}/init to make this folder an armory, /init <name> to create one.")
+        cwd = Path.cwd()
+        self.out.note(f"heph · {cwd} is not an armory · /help")
+        pick = "Type a number or name to open one. " if self.armories() else ""
+        home = armory.armory_home()
+        if armory.refused(cwd):
+            create = f"/init <name> creates {home}/<name>; `heph init` in a folder makes it one."
+        else:
+            create = f"/init makes this folder an armory; /init <name> creates {home}/<name>."
+        self.out.note(pick + create)
 
     def pick(self, choice: str) -> None:
         if choice.isdigit():
