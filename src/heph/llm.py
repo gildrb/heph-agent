@@ -1,4 +1,4 @@
-"""Stdlib OpenAI-compatible client: SSE-streamed chat completions and GET /models."""
+"""Stdlib OpenAI-compatible client (SSE chat completions, GET /models) and the client protocol."""
 
 import http.client
 import json
@@ -6,7 +6,7 @@ import ssl
 from collections.abc import Iterator
 from dataclasses import dataclass
 from http import HTTPStatus
-from pathlib import Path
+from typing import Protocol
 from urllib.parse import urlsplit
 
 import certifi
@@ -15,6 +15,10 @@ from heph import HephError
 
 _CONNECT_TIMEOUT = 10.0
 _READ_TIMEOUT = 300.0
+
+
+class AuthError(HephError):
+    """The server refused the request's key (HTTP 401 or 403)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,6 +43,16 @@ class Finish:
 type Message = dict[str, str]
 
 
+class ModelClient(Protocol):
+    """What answering needs from a login: its models and one streamed chat completion."""
+
+    def models(self) -> list[str]: ...
+
+    def stream(
+        self, model: str, messages: list[Message], max_tokens: int, temperature: float
+    ) -> Iterator[Delta | Usage | Finish]: ...
+
+
 def _at(value: object, *path: str | int) -> object:
     for key in path:
         match value, key:
@@ -55,7 +69,6 @@ def _at(value: object, *path: str | int) -> object:
 class Client:
     base_url: str
     api_key: str
-    config_path: Path
 
     def _open(self, method: str, path: str, body: bytes | None) -> http.client.HTTPResponse:
         url = f"{self.base_url}{path}"
@@ -81,15 +94,15 @@ class Client:
             raise HephError(f"{method} {url} failed: {exc}") from exc
         except OSError as exc:
             raise HephError(
-                f"No model server at {self.base_url} ({exc.strerror or exc}). Start llama-server "
-                f"or set base_url in {self.config_path} (or HEPH_BASE_URL)."
+                f"No model server at {self.base_url} ({exc.strerror or exc}). Start it, or "
+                "pick another model with /model."
             ) from exc
         if response.status >= HTTPStatus.BAD_REQUEST:
             snippet = " ".join(response.read(800).decode(errors="replace").split())
-            hint = ""
+            message = f"{method} {url} returned HTTP {response.status}: {snippet}"
             if response.status in {401, 403}:
-                hint = f" Set api_key_env or api_key_file in {self.config_path}, or HEPH_API_KEY."
-            raise HephError(f"{method} {url} returned HTTP {response.status}: {snippet}{hint}")
+                raise AuthError(f"{message} The key is missing or wrong: /login saves one.")
+            raise HephError(message)
         return response
 
     def models(self) -> list[str]:

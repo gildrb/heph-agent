@@ -18,18 +18,19 @@ uv run heph --version
 Or `brew install gildrb/heph/heph`. Beyond the source and its Python dependencies, Heph
 downloads nothing at install or at run time.
 
-## Start a model server
+## Pick a model
 
-Heph talks to any OpenAI-compatible server. By default it expects one on your machine at
-`http://127.0.0.1:8080/v1`, for example llama.cpp:
+Heph talks to any OpenAI-compatible server. With no login it expects one on your machine
+at `http://127.0.0.1:8080/v1`, for example llama.cpp:
 
 ```bash
 llama-server -m ~/models/your-model.gguf --port 8080
 ```
 
-vLLM, SGLang and Ollama work too: point `base_url` at them (see
-[Configuration](configuration.md)). Local servers need no API key. Heph never starts,
-installs or downloads servers or models; you run them yourself.
+Inside `heph`, `/model` lists your logins and their models, `/model http://host:port/v1`
+adds any local server (vLLM, SGLang, Ollama...), and `/login` adds OpenAI, OpenRouter,
+DeepSeek, Z.AI or your ChatGPT subscription. See [Configuration](configuration.md). Heph
+never starts, installs or downloads servers or models; you run them yourself.
 
 ## Create an armory
 
@@ -60,15 +61,19 @@ In a session, type a question and press Enter. The answer streams into the termi
 Each citation is colored once it has been checked: green for a verified quote, yellow for
 a citation without a quote, red for a quote that does not match or an unknown evidence id.
 A sources footer lists every citation, and a stats line shows the model, tokens, tok/s
-and time.
+and time. The line at the bottom shows the armory, model and login.
 
-Commands in a session:
+Type `/` for the command menu; it narrows as you type. Commands are forgiving: `/mod`,
+`/mdl` and `/modle` all run `/model`.
 
 | Command | Action |
 | --- | --- |
+| `/model [name\|url]` | list your logins and models, switch, or add a local server |
 | `/armory [name]` | list armories, or open one by number, name or path |
 | `/init [name]` | make this folder an armory, or create one in `~/.armories` |
 | `/add <path>...` | copy files or folders into the armory, then index |
+| `/login [provider]` | add a login: OpenAI, OpenRouter, DeepSeek, Z.AI, Codex, local |
+| `/logout <login>` | remove a login and its saved key |
 | `/new` | start a new chat |
 | `/sources` | show the evidence of the last answer |
 | `/index` | re-index the armory |

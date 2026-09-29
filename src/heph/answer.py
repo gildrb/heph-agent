@@ -9,7 +9,7 @@ from typing import Literal, Protocol
 from heph import HephError, core
 from heph.config import Config
 from heph.index import Index
-from heph.llm import Client, Finish, Message, Usage
+from heph.llm import Finish, Message, ModelClient, Usage
 
 type Status = Literal["verified", "failed", "unquoted", "badid"]
 _STATUS: dict[core.Verdict, Status] = {
@@ -196,7 +196,7 @@ class _Blocks:
 
 @dataclass(frozen=True, slots=True)
 class Engine:
-    client: Client
+    client: ModelClient
     model: str
     config: Config
     index: Index

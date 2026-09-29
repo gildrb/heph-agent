@@ -14,6 +14,8 @@ from rich.text import Text
 from heph.answer import Citation, Evidence, Result, Status, location
 from heph.index import Report
 
+SEP = "   "  # separates fields on one line: spacing, no dots
+
 _STYLE: dict[Status, str] = {
     "verified": "green",
     "unquoted": "yellow",
@@ -65,6 +67,12 @@ class Renderer:
         finally:
             self._spinner = None
 
+    def fullscreen(self) -> None:
+        """Starts a session on a blank terminal: clears the screen and its scrollback."""
+        if self.console.is_terminal:
+            self.console.file.write("\x1b[H\x1b[2J\x1b[3J")
+            self.console.file.flush()
+
     def update(self, text: str) -> None:
         if self._spinner is not None:
             self._spinner.update(Text(text, style="dim"))
@@ -72,7 +80,7 @@ class Renderer:
     def reasoning(self, text: str) -> None:
         self._thought = (self._thought + text)[-400:]
         tail = " ".join(self._thought.split())[-max(20, self.console.width - 16) :]
-        self.update(f"Thinking · {tail}")
+        self.update(f"Thinking{SEP}{tail}")
 
     def block(self, text: str, offset: int, citations: Sequence[Citation]) -> None:
         self.update("Writing")
@@ -138,7 +146,7 @@ class Renderer:
             # end to end, including prefill: some servers buffer the whole stream
             stats.append(f"{tokens / result.seconds:.1f} tok/s")
         stats.append(f"{result.seconds:.1f} s")
-        self.console.print(Text(" · ".join(stats), style="dim"))
+        self.console.print(Text(SEP.join(stats), style="dim"))
 
     def sources(self, evidence: Sequence[Evidence]) -> None:
         if not evidence:
@@ -151,9 +159,9 @@ class Renderer:
 
     def report(self, report: Report) -> None:
         files = f"{report.files} file{'' if report.files == 1 else 's'}"
-        summary = f"{files} · {report.built} indexed · {report.removed} removed"
+        summary = SEP.join((files, f"{report.built} indexed", f"{report.removed} removed"))
         if report.skipped:
-            summary += f" · {len(report.skipped)} skipped"
+            summary += f"{SEP}{len(report.skipped)} skipped"
         self.console.print(Text(summary, style="dim"))
         for source, reason in report.skipped:
             self.console.print(Text(f"  skipped {source}: {reason}", style="yellow"))

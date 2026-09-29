@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import NoReturn
 
 from heph import HephError
+from heph.fuzzy import rank
 
 INTERNAL = ".harness"
 MARKER = f"{INTERNAL}/armory.toml"
@@ -90,8 +91,8 @@ def known() -> list[Path]:
 
 
 def resolve(arg: str | None) -> Path:
-    """Resolves an armory argument: the cwd, a path (has a `/` or starts with `.`/`~`), or a
-    name under the armory home; a bare name falls back to a path only if no such armory exists.
+    """Resolves an armory argument: the cwd; a path (has a `/` or starts with `.`/`~`); an
+    armory name in the home; a folder here; else the closest name (typos forgiven).
     """
     if arg is None:
         if (cwd := here()) is not None:
@@ -100,10 +101,15 @@ def resolve(arg: str | None) -> Path:
         hint = f" Or name one: {names}." if names else ""
         raise HephError(f"{Path.cwd()} is not an armory. Run `heph init` to make it one.{hint}")
     path = Path(arg).expanduser()
+    if os.sep in arg or arg.startswith((".", "~")):
+        return validate(path)
     named = armory_home() / arg
-    is_path = os.sep in arg or arg.startswith((".", "~"))
-    if is_path or not (named / MARKER).is_file():
-        return validate(path if path.exists() else named)
+    if (named / MARKER).is_file():
+        return validate(named)
+    if (path / MARKER).is_file():
+        return validate(path)
+    if matches := rank(arg, [p.name for p in known()]):
+        return validate(armory_home() / matches[0])
     return validate(named)
 
 

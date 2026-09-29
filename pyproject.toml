@@ -22,6 +22,7 @@ classifiers = [
 dependencies = [
     "certifi==2026.2.25",
     "defusedxml==0.7.1",
+    "prompt-toolkit==3.0.53",
     "pypdfium2==5.10.1",
     "rich==14.3.3",
 ]

@@ -4,25 +4,27 @@ Heph reports errors with the cause and the fix; this page adds context.
 
 ## No model server
 
-`No model server at http://127.0.0.1:8080/v1` means nothing answered at `base_url`.
-Start one (`llama-server -m model.gguf --port 8080`) or point Heph at yours:
-
-```bash
-export HEPH_BASE_URL=http://127.0.0.1:11434/v1
-heph config
-```
+`No model server at http://127.0.0.1:8080/v1` means nothing answered at the active login.
+Start one (`llama-server -m model.gguf --port 8080`), or in `heph` add yours with
+`/model http://host:port/v1`, or pick another login with `/model`.
 
 ## No model listed
 
-With `model` empty, Heph uses the first id from `GET {base_url}/models`. If the server
-lists none, load a model in the server or set `model` / `HEPH_MODEL`.
+Without a chosen model, Heph uses the first one the login lists. If it lists none, load a
+model in the server, or pick one with `/model <name>`.
 
 ## 401 or 403 from the server
 
-The provider needs a key. Set `HEPH_API_KEY`, or in `config.toml` set `api_key_env` to the
-name of the variable that holds it, or `api_key_file` to a file that holds it. Heph stops
-with an error when `api_key_env` names an unset variable or `api_key_file` is unreadable
-or empty.
+The login needs a key, or has the wrong one. `/login <provider>` saves a key for a hosted
+provider; `/model <url>` asks for one when a local server wants it. A `key_file` in
+`logins.toml` that is unreadable or empty stops Heph with an error. For Codex, run
+`/login codex` again.
+
+## Old config files
+
+`config.toml` now holds only `max_tokens`, `temperature` and `evidence_tokens`; Heph
+reports any other key. Move a server to a login with `/model <url>`, or into
+`logins.toml` with a `key_file` line (see [Configuration](configuration.md)).
 
 ## Not an armory
 

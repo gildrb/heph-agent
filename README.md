@@ -55,15 +55,20 @@ heph                        # ask questions
 | --- | --- |
 | `heph` | opens the armory in this folder, or lists armories to pick from |
 | `heph init [name]` | makes this folder an armory, or creates `~/.armories/[name]` |
+| `/model`, `/login` | lists your logins and models, switches, adds a local server or a provider |
 | `/init`, `/armory`, `/add [path]` | create, switch, or copy files in, inside `heph` |
 | `heph ask [armory] "question" --json` | one answer, for scripts |
+
+Type `/` for the command menu. Commands are forgiving: `/mod`, `/mdl` and `/modle` all run
+`/model`.
 
 Answers cite evidence as `[E1: "quoted words"]`, and Heph checks each quote against that
 passage: ✓ found, ✗ not found or unknown passage, ? no quote.
 
-Heph expects an OpenAI-compatible server at `http://127.0.0.1:8080/v1` (llama.cpp
-`llama-server`); vLLM, SGLang and Ollama work too. Set `base_url` in
-`~/.config/heph/config.toml`; see [Configuration](docs/configuration.md).
+With no login, Heph uses a server at `http://127.0.0.1:8080/v1` (llama.cpp
+`llama-server`). `/model http://host:port/v1` adds any other local server (vLLM, SGLang,
+Ollama); `/login` adds OpenAI, OpenRouter, DeepSeek, Z.AI or your ChatGPT subscription.
+See [Configuration](docs/configuration.md).
 
 ## Compared to v0.0.63
 
@@ -74,18 +79,18 @@ Heph expects an OpenAI-compatible server at `http://127.0.0.1:8080/v1` (llama.cp
 | Default model | none until you pick one | your local server, no key | [Configuration](docs/configuration.md) |
 | Model tools | files and web; shell and plugins if trusted | none | [Architecture](docs/architecture.md#zero-remote-code-execution) |
 | Downloads at run time | llama.cpp builds, models, model lists | nothing | same |
-| Install (Linux, empty venv) | 42 packages, 46 MiB | 8 packages, 14 MiB | `uv sync` / `uv pip install` |
-| Heph's own code | 1.76 MB Python | 67 KB Python + 46 KB Bend | [`src/heph`](src/heph), [`core`](core) |
+| Install (Linux, empty venv) | 42 packages, 46 MiB | 10 packages, 19 MiB | `uv sync` / `uv pip install` |
+| Heph's own code | 1.76 MB Python | 103 KB Python + 46 KB Bend | [`src/heph`](src/heph), [`core`](core) |
 | Armory | files go in `materials/` | any folder | [Armories](docs/armories.md) |
-| Interface | full-screen TUI | inline command line | screenshot above |
+| Interface | full-screen TUI | full-screen command line | screenshot above |
 
 ## Design
 
 Python (`src/heph`) reads files, talks to the model and prints answers. A Bend core
 (`core/`) chunks documents, ranks passages with BM25 and checks quotes. Nine laws in
 `core/LAWS.bend`, such as "a quote marked ✓ is byte-for-byte in its passage", are proven by
-`bend core/PROOF.bend` in CI. The model has no tools, the only network peer is your
-`base_url`, and nothing is downloaded. See [Architecture](docs/architecture.md).
+`bend core/PROOF.bend` in CI. The model has no tools, Heph talks only to the model you
+picked, and nothing is downloaded. See [Architecture](docs/architecture.md).
 
 ## Development
 

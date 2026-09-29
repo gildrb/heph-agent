@@ -17,17 +17,22 @@ answer ─ parse citations ─ core: verify ─ rendered answer + sources + stat
 | Module | Role |
 | --- | --- |
 | `cli.py` | argparse entry point, interactive session, slash commands |
-| `config.py` | `config.toml` and `HEPH_*` environment overrides |
+| `prompt.py` | input line: fuzzy slash-command completion, status line, history |
+| `fuzzy.py` | forgiving name matching: exact, prefix, letters in order, typos |
+| `config.py` | `config.toml` settings |
+| `logins.py` | logins (local servers, API keys, Codex), the active model, key files |
+| `codex.py` | ChatGPT subscription: OAuth sign-in and the Codex Responses stream |
 | `armory.py` | armory layout, init/resolve, material discovery, ignore rules, safe reads |
 | `extract.py` | text from PDF (per page), DOCX, PPTX, XLSX, ODT, ODS and UTF-8 text |
 | `core.py` | `heph-core` subprocess client (protocol v1 below) |
 | `index.py` | per-file index caches, tokenizer, postings, retrieval |
 | `llm.py` | stdlib HTTP client: streaming chat completions, `GET /models` |
 | `answer.py` | one turn: retrieve, prompt, stream, verify citations |
-| `render.py` | inline terminal output (rich): citations, sources footer, stats |
+| `render.py` | terminal output (rich): citations, sources footer, stats |
 | `session.py` | chat persistence in `.harness/chats/` |
 
-Runtime dependencies: `pypdfium2`, `defusedxml`, `rich`, `certifi`, all pinned exactly.
+Runtime dependencies: `pypdfium2`, `defusedxml`, `rich`, `prompt-toolkit`, `certifi`, all
+pinned exactly.
 
 The tokenizer stays in Python because it is Unicode-aware: NFKC normalization and
 case-folding, `\w+` runs, dropping one-character non-digit tokens and a short stop list.
@@ -42,11 +47,11 @@ Python sends the core postings, not text, for ranking.
 | `main.bend` | stdin frame parser and output writer |
 | `stdin.c`, `stdout.c` | the only foreign code: copy stdin into a packed buffer, write a packed buffer to stdout |
 | `LAWS.bend` | specifications and law statements (`LAWS-REVIEW.md` compares them with the list-based originals) |
-| `PROOF.bend`, `proof/` | proofs of the laws; `bend core/PROOF.bend` must print `All terms check.` |
+| `PROOF.bend`, `proof/` | proofs of the laws; `bend core/PROOF.bend` must print `ALL PROOFS CHECK` |
 | `build.sh` | runs `bend PROOF.bend`, emits `core/build/heph-core.c`, compiles `src/heph/_bin/heph-core` |
 
 Data stays packed end to end: the whole request is one `Array<U32>` (4 bytes per slot, which
-Bend 2.0.27 lowers to a contiguous buffer with O(1) reads and writes), documents, evidence
+Bend 2.0.32 lowers to a contiguous buffer with O(1) reads and writes), documents, evidence
 and quotes are offset ranges into it, and scores live in an `Array<Nat>` table. No stage
 turns bytes into one-cell-per-byte lists.
 
@@ -140,7 +145,8 @@ h <r_seq> <rank> <chunk> <score> one per hit, rank 0-based, score desc then chun
 - The only subprocess is the packaged `heph-core`, resolved inside the installed package
   and run with a fixed argv, no shell, stdin and stdout only. It contains no network or
   exec code.
-- The only network peer is the configured `base_url` (`POST /chat/completions`,
-  `GET /models`).
+- Network peers are the active login's server (`POST /chat/completions`, `GET /models`);
+  a Codex login uses `chatgpt.com` for answers and `auth.openai.com` to sign in. Heph
+  opens no browser: it prints the sign-in URL.
 - Materials are untrusted: symlinks and path escapes are refused, sizes are capped, Office
   archives are checked for bombs and traversal, XML is parsed with `defusedxml`.
