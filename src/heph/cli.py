@@ -139,11 +139,13 @@ class _Repl:
         """The line under the prompt: armory, chunks, model, login."""
         login, model = logins.active(self.saved)
         if self.open is None:
-            return SEP.join(("no armory", model, login.name, "/armory", "/init", "/help"))
-        engine = self.open.engine
-        chunks = f"{len(self.open.index.chunks)} chunks"
-        parts = (self.open.root.name, chunks, engine.model if engine else model, login.name)
-        return SEP.join(part for part in (*parts, "/help") if part)
+            parts = ("no armory", model, login.name, "/armory", "/init", "/help")
+        else:
+            engine = self.open.engine
+            chunks = f"{len(self.open.index.chunks)} chunks"
+            model = engine.model if engine else model
+            parts = (self.open.root.name, chunks, model, login.name, "/help")
+        return SEP.join(part for part in parts if part)
 
     def all_logins(self) -> list[logins.Login]:
         """The saved logins, plus the one in use when it isn't saved (default or HEPH_BASE_URL)."""
