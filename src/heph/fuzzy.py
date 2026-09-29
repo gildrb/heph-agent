@@ -29,17 +29,17 @@ def _typos(a: str, b: str) -> int:
     return previous[-1]
 
 
-def rank(query: str, names: Sequence[str]) -> list[str]:
-    """The names query could mean, best first; an empty query keeps every name in order.
+def order(query: str, names: Sequence[str]) -> list[int]:
+    """Indexes of the names query could mean, best first; an empty query keeps them all.
 
     Tiers: exact, prefix (shorter first), letters in order (tighter first), then up to one
     typo per three letters (at least one). Ties keep the order of names.
     """
     wanted = query.casefold()
     if not wanted:
-        return list(names)
-    scored: list[tuple[int, int, int, str]] = []
-    for order, name in enumerate(names):
+        return list(range(len(names)))
+    scored: list[tuple[int, int, int]] = []
+    for index, name in enumerate(names):
         candidate = name.casefold()
         if candidate == wanted:
             tier, score = 0, 0
@@ -51,5 +51,10 @@ def rank(query: str, names: Sequence[str]) -> list[str]:
             tier, score = 3, typos
         else:
             continue
-        scored.append((tier, score, order, name))
-    return [name for *_, name in sorted(scored)]
+        scored.append((tier, score, index))
+    return [index for *_, index in sorted(scored)]
+
+
+def rank(query: str, names: Sequence[str]) -> list[str]:
+    """The names query could mean, best first (see order)."""
+    return [names[index] for index in order(query, names)]

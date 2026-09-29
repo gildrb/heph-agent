@@ -7,12 +7,12 @@ all run `/model`.
 
 | Command | Does |
 | --- | --- |
-| `/model` | lists every login with its models; the active one is marked |
+| `/model` | picks a model from every login (the active one first), or "add a local server", or "log in"; logins that fail show why |
 | `/model <name>` | switches login or model; any fragment works (`/model 18020`, `/model qwen`, `/model openrouter/qwen3-32b`) |
 | `/model <url>` | adds a local or self-hosted server and switches to it; asks for a key if the server wants one |
-| `/login` | lists providers |
+| `/login` | picks a provider |
 | `/login <provider>` | `openai`, `openrouter`, `deepseek`, `zai`: asks for an API key; `codex`: logs in to your ChatGPT subscription; `local <url>`: same as `/model <url>` |
-| `/logout <login>` | removes a login and the key Heph saved for it |
+| `/logout [login]` | removes a login and the key Heph saved for it; picks one when not named |
 
 With no login, Heph uses a server on this machine at `http://127.0.0.1:8080/v1` (llama.cpp
 `llama-server`) and its first model. Common local servers:

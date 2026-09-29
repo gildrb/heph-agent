@@ -157,7 +157,10 @@ class Renderer:
             line.append("  " + " ".join(item.text.split())[:100], style="dim")
             self.console.print(line, overflow="ellipsis", no_wrap=True)
 
-    def report(self, report: Report) -> None:
+    def report(self, report: Report, *, quiet: bool) -> None:
+        """Index outcome; when quiet, only if something changed or was skipped."""
+        if quiet and not (report.built or report.removed or report.skipped):
+            return
         files = f"{report.files} file{'' if report.files == 1 else 's'}"
         summary = SEP.join((files, f"{report.built} indexed", f"{report.removed} removed"))
         if report.skipped:

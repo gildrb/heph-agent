@@ -10,11 +10,14 @@ import shutil
 import stat
 import tempfile
 from datetime import UTC, datetime
+from importlib import resources
 from pathlib import Path
 from typing import NoReturn
 
 from heph import HephError
 from heph.fuzzy import rank
+
+GUIDE = "heph-guide"  # the armory Heph opens first: its own guide, shipped as Markdown
 
 INTERNAL = ".harness"
 MARKER = f"{INTERNAL}/armory.toml"
@@ -88,6 +91,43 @@ def known() -> list[Path]:
     home = armory_home()
     found = home.iterdir() if home.is_dir() else ()
     return sorted((p for p in found if (p / MARKER).is_file()), key=lambda p: p.name)
+
+
+def recent() -> list[Path]:
+    """Armories in the armory home, most recently used first (by their input history)."""
+
+    def used(root: Path) -> float:
+        history = root / INTERNAL / "history"
+        return (history if history.is_file() else root / MARKER).stat().st_mtime
+
+    return sorted(known(), key=used, reverse=True)
+
+
+def guide() -> Path:
+    """The Heph guide armory: made on first use, its pages refreshed from this version."""
+    root = armory_home() / GUIDE
+    if not (root / MARKER).is_file():
+        _ = init(str(root))
+    for page in resources.files("heph").joinpath("guide").iterdir():
+        if not page.name.endswith(".md"):
+            continue
+        text = page.read_text(encoding="utf-8")
+        target = root / page.name
+        if not target.is_symlink() and target.is_file() and target.read_text("utf-8") == text:
+            continue
+        flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW
+        with os.fdopen(os.open(target, flags, 0o644), "w", encoding="utf-8") as file:
+            file.write(text)
+    return validate(root)
+
+
+def snapshot(root: Path) -> tuple[tuple[str, int, int], ...]:
+    """Each material's path, size and change time: cheap to compare between questions."""
+    out: list[tuple[str, int, int]] = []
+    for rel in materials(root):
+        info = (root / rel).lstat()
+        out.append((rel, info.st_size, info.st_mtime_ns))
+    return tuple(out)
 
 
 def resolve(arg: str | None) -> Path:

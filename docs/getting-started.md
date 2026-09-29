@@ -42,8 +42,8 @@ heph init                            # make it an armory
 heph                                 # ask questions
 ```
 
-Or stay inside Heph: run `heph` anywhere, then `/init notes` creates `~/.armories/notes`
-and `/add ~/Downloads/report.pdf` copies a file in.
+Or stay inside Heph: `/armory` picks "new armory" or "use this folder", and `/add` asks for
+a file or folder to copy in (or `/add ~/Downloads/report.pdf`).
 
 Supported materials: PDF, DOCX, PPTX, XLSX, ODT, ODS, and UTF-8 text (Markdown, notes,
 code). See [Armories](armories.md).
@@ -51,7 +51,7 @@ code). See [Armories](armories.md).
 ## Ask
 
 ```bash
-heph                                 # the armory in this folder, or a picker
+heph                                 # the armory in this folder, or the Heph guide
 heph notes                           # the armory ~/.armories/notes
 heph ask notes "What does the report conclude?"
 heph ask notes "What does the report conclude?" --json
@@ -61,22 +61,25 @@ In a session, type a question and press Enter. The answer streams into the termi
 Each citation is colored once it has been checked: green for a verified quote, yellow for
 a citation without a quote, red for a quote that does not match or an unknown evidence id.
 A sources footer lists every citation, and a stats line shows the model, tokens, tok/s
-and time. The line at the bottom shows the armory, model and login.
+and time. The line at the bottom shows the armory, its file count, the model and login.
+New, changed and deleted files are re-indexed before the next question.
+
+Outside an armory, `heph` opens the Heph guide (`~/.armories/heph-guide`): pages about
+Heph itself, refreshed from the installed version. Ask it how Heph works.
 
 Type `/` for the command menu; it narrows as you type. Commands are forgiving: `/mod`,
-`/mdl` and `/modle` all run `/model`.
+`/mdl` and `/modle` all run `/model`. Commands without an argument open a picker: type to
+filter, arrows move, Enter picks, Esc skips.
 
 | Command | Action |
 | --- | --- |
-| `/model [name\|url]` | list your logins and models, switch, or add a local server |
-| `/armory [name]` | list armories, or open one by number, name or path |
-| `/init [name]` | make this folder an armory, or create one in `~/.armories` |
-| `/add <path>...` | copy files or folders into the armory, then index |
+| `/model [name\|url]` | pick a model from every login, add a local server, or log in |
+| `/armory [name]` | pick an armory, use this folder, or create one in `~/.armories` |
+| `/add [path]...` | copy files or folders into the armory (asks when no path), then index |
 | `/login [provider]` | add a login: OpenAI, OpenRouter, DeepSeek, Z.AI, Codex, local |
-| `/logout <login>` | remove a login and its saved key |
+| `/logout [login]` | remove a login and its saved key |
 | `/new` | start a new chat |
 | `/sources` | show the evidence of the last answer |
-| `/index` | re-index the armory |
 | `/help` | list commands |
 | `/exit` | quit (Ctrl-D works too) |
 
@@ -84,7 +87,7 @@ Type `/` for the command menu; it narrows as you type. Commands are forgiving: `
 
 | Command | Action |
 | --- | --- |
-| `heph [armory]` | interactive session: the armory named, the current folder, or a picker |
+| `heph [armory]` | interactive session: the armory named, the current folder, or the Heph guide |
 | `heph init [name\|path]` | make the current folder (or a name or path) an armory |
 | `heph index [armory]` | update the index |
 | `heph ask <armory> <question...> [--json]` | answer one question |

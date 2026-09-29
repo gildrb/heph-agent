@@ -1,33 +1,37 @@
-"""Interactive input: fuzzy slash commands and a status line pinned to the bottom."""
+"""Interactive input: fuzzy slash commands, arrow-key pickers, and a status line."""
 
 import sys
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from dataclasses import dataclass
 from getpass import getpass
 from pathlib import Path
 
 from prompt_toolkit import PromptSession, prompt
+from prompt_toolkit.application import Application
+from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.completion import CompleteEvent, Completer, Completion, PathCompleter
 from prompt_toolkit.document import Document
 from prompt_toolkit.filters import has_completions
+from prompt_toolkit.formatted_text import StyleAndTextTuples
 from prompt_toolkit.history import FileHistory, History, InMemoryHistory
 from prompt_toolkit.key_binding import KeyBindings, KeyPressEvent
+from prompt_toolkit.layout import HSplit, Layout, Window
+from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
 from prompt_toolkit.styles import Style
 
-from heph.fuzzy import rank
+from heph.fuzzy import order, rank
 
 PROMPT = "\N{SINGLE RIGHT-POINTING ANGLE QUOTATION MARK} "
 # name: (arguments, what it does); the order is the menu order for an empty query
 COMMANDS: dict[str, tuple[str, str]] = {
-    "model": ("[model|url]", "list your logins' models, switch, or add a local server by URL"),
-    "armory": ("[name]", "list armories, or open one by number, name or path"),
-    "init": ("[name]", "make this folder an armory, or create one in the armory home"),
-    "add": ("<path>...", "copy files or folders into the armory, then index"),
-    "login": ("[provider]", "log in: local server URL, OpenAI, OpenRouter, DeepSeek, Z.AI, Codex"),
-    "logout": ("<login>", "remove a login and the key Heph saved for it"),
-    "new": ("", "start a new chat (forget the conversation so far)"),
-    "sources": ("", "show the evidence given to the model for the last answer"),
-    "index": ("", "re-index the armory"),
-    "help": ("", "show this help"),
+    "model": ("", "pick the model, add a local server, or log in"),
+    "armory": ("", "open or create an armory"),
+    "add": ("[path]", "copy a file or folder into this armory"),
+    "new": ("", "start a new chat"),
+    "sources": ("", "show the passages behind the last answer"),
+    "login": ("", "log in to OpenAI, OpenRouter, DeepSeek, Z.AI or ChatGPT"),
+    "logout": ("", "remove a login"),
+    "help": ("", "show commands"),
     "exit": ("", "quit (Ctrl-D works too)"),
 }
 _ALIASES = {"quit": "exit"}
@@ -41,8 +45,120 @@ _STYLE = Style.from_dict(
         "completion-menu.meta.completion.current": "reverse",
         "scrollbar.background": "bg:default",
         "scrollbar.button": "bg:ansibrightblack",
+        "pick.title": "bold",
+        "pick.current": "reverse",
+        "pick.detail": "fg:ansibrightblack",
     }
 )
+
+
+@dataclass(frozen=True, slots=True)
+class Option:
+    value: str
+    label: str
+    detail: str = ""
+
+
+class _Picker:
+    """A list under a filter line: typing narrows it (fuzzy), arrows move, Enter picks."""
+
+    def __init__(self, title: str, options: Sequence[Option], rows: int) -> None:
+        self.title = title
+        self.options = options
+        self.rows = rows
+        self.selected = 0
+        self.query = Buffer(multiline=False, on_text_changed=self._reset)
+
+    def _reset(self, _buffer: Buffer) -> None:
+        self.selected = 0
+
+    def shown(self) -> tuple[list[Option], int]:
+        """The matches that fit on screen, and how many more there are."""
+        texts = [f"{option.label} {option.detail}" for option in self.options]
+        found = [self.options[index] for index in order(self.query.text, texts)]
+        return found[: self.rows], max(len(found) - self.rows, 0)
+
+    def lines(self) -> StyleAndTextTuples:
+        shown, more = self.shown()
+        self.selected = min(self.selected, max(len(shown) - 1, 0))
+        out: StyleAndTextTuples = []
+        width = max((len(option.label) for option in shown), default=0)
+        for index, option in enumerate(shown):
+            current = index == self.selected
+            out.append(("class:pick.current" if current else "", f" {option.label.ljust(width)} "))
+            if option.detail:
+                out.append(("class:pick.detail", f"  {option.detail}"))
+            out.append(("", "\n"))
+        if not shown:
+            out.append(("class:pick.detail", " nothing matches\n"))
+        keys = "type to filter   ↑↓ move   Enter pick   Esc skip"
+        out.append(("class:pick.detail", f" +{more} more   {keys}" if more else f" {keys}"))
+        return out
+
+    def run(self) -> str | None:
+        keys = KeyBindings()
+
+        @keys.add("up")
+        @keys.add("c-p")
+        @keys.add("s-tab")
+        def _up(event: KeyPressEvent) -> None:
+            del event
+            self.selected = max(self.selected - 1, 0)
+
+        @keys.add("down")
+        @keys.add("c-n")
+        @keys.add("tab")
+        def _down(event: KeyPressEvent) -> None:
+            del event
+            self.selected = min(self.selected + 1, max(len(self.shown()[0]) - 1, 0))
+
+        @keys.add("enter")
+        def _pick(event: KeyPressEvent) -> None:
+            shown = self.shown()[0]
+            event.app.exit(result=shown[self.selected].value if shown else None)
+
+        @keys.add("escape", eager=True)
+        @keys.add("c-c")
+        @keys.add("c-d")
+        def _skip(event: KeyPressEvent) -> None:
+            event.app.exit(result=None)
+
+        def prefix(_line: int, _wrap: int) -> StyleAndTextTuples:
+            return [("", PROMPT)]
+
+        layout = Layout(
+            HSplit(
+                [
+                    Window(FormattedTextControl([("class:pick.title", self.title)]), height=1),
+                    Window(BufferControl(self.query), height=1, get_line_prefix=prefix),
+                    Window(FormattedTextControl(self.lines)),
+                ]
+            ),
+            focused_element=self.query,
+        )
+        app: Application[str | None] = Application(
+            layout=layout, key_bindings=keys, style=_STYLE, erase_when_done=True
+        )
+        return app.run()
+
+
+def pick(title: str, options: Sequence[Option], rows: int = 12) -> str | None:
+    """Lets the user choose one option; None when they skip (Esc, Ctrl-C) or there is none."""
+    if not options:
+        return None
+    if sys.stdin.isatty():
+        return _Picker(title, options, rows).run()
+    print(title)
+    for number, option in enumerate(options, 1):
+        print(f"  {number}  {option.label}  {option.detail}".rstrip())
+    try:
+        answer = input(PROMPT).strip()
+    except EOFError:
+        return None
+    if answer.isdigit() and 1 <= int(answer) <= len(options):
+        return options[int(answer) - 1].value
+    found = order(answer, [option.label for option in options]) if answer else []
+    return options[found[0]].value if found else None
 
 
 def command(name: str) -> str | None:
@@ -129,9 +245,17 @@ class Input:
             return input(PROMPT)
         return self._session.prompt(PROMPT)
 
-    def ask(self, label: str) -> str:
-        """One plain answer, outside history and completion."""
-        return input(label) if not sys.stdin.isatty() else prompt(label, style=_STYLE)
+    def ask(self, label: str, default: str = "") -> str:
+        """One plain answer, outside history and completion; Enter alone keeps the default."""
+        if not sys.stdin.isatty():
+            return input(label) or default
+        return prompt(label, default=default, style=_STYLE)
+
+    def path(self, label: str) -> str:
+        """One file or folder path, completed as it is typed."""
+        if not sys.stdin.isatty():
+            return input(label)
+        return prompt(label, completer=PathCompleter(expanduser=True), style=_STYLE)
 
     def secret(self, label: str) -> str:
         """One hidden answer (API keys)."""

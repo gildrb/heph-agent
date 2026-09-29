@@ -16,13 +16,15 @@ answer ─ parse citations ─ core: verify ─ rendered answer + sources + stat
 
 | Module | Role |
 | --- | --- |
-| `cli.py` | argparse entry point, interactive session, slash commands |
-| `prompt.py` | input line: fuzzy slash-command completion, status line, history |
+| `cli.py` | argparse entry point: `init`, `index`, `ask`, `config`, the session |
+| `repl.py` | interactive session: slash commands, pickers, re-index on file changes |
+| `prompt.py` | input line: fuzzy slash-command completion, arrow-key pickers, status line, history |
 | `fuzzy.py` | forgiving name matching: exact, prefix, letters in order, typos |
+| `guide/` | the Heph guide armory's pages, copied to `~/.armories/heph-guide` |
 | `config.py` | `config.toml` settings |
 | `logins.py` | logins (local servers, API keys, Codex), the active model, key files |
 | `codex.py` | ChatGPT subscription: OAuth sign-in and the Codex Responses stream |
-| `armory.py` | armory layout, init/resolve, material discovery, ignore rules, safe reads |
+| `armory.py` | armory layout, init/resolve, the guide, material discovery, ignore rules, safe reads |
 | `extract.py` | text from PDF (per page), DOCX, PPTX, XLSX, ODT, ODS and UTF-8 text |
 | `core.py` | `heph-core` subprocess client (protocol v1 below) |
 | `index.py` | per-file index caches, tokenizer, postings, retrieval |

@@ -45,6 +45,9 @@ uv run heph
 
 ## Use an armory
 
+Run `heph` anywhere. Outside an armory it opens the Heph guide, an armory of pages about
+Heph: ask it "how do I add my own files?" and the answer cites the guide.
+
 ```sh
 cd ~/Documents/contracts    # any folder of files
 heph init                   # make it an armory
@@ -53,14 +56,15 @@ heph                        # ask questions
 
 | Command | Does |
 | --- | --- |
-| `heph` | opens the armory in this folder, or lists armories to pick from |
+| `heph` | opens the armory in this folder, or the Heph guide |
 | `heph init [name]` | makes this folder an armory, or creates `~/.armories/[name]` |
-| `/model`, `/login` | lists your logins and models, switches, adds a local server or a provider |
-| `/init`, `/armory`, `/add [path]` | create, switch, or copy files in, inside `heph` |
+| `/model` | picks a model from every login, adds a local server, or logs in |
+| `/armory`, `/add` | picks, creates or switches armories; copies files in |
 | `heph ask [armory] "question" --json` | one answer, for scripts |
 
 Type `/` for the command menu. Commands are forgiving: `/mod`, `/mdl` and `/modle` all run
-`/model`.
+`/model`. Pickers filter as you type; arrows move, Enter picks, Esc skips. New, changed and
+deleted files are re-indexed before the next question.
 
 Answers cite evidence as `[E1: "quoted words"]`, and Heph checks each quote against that
 passage: ✓ found, ✗ not found or unknown passage, ? no quote.
@@ -80,7 +84,7 @@ See [Configuration](docs/configuration.md).
 | Model tools | files and web; shell and plugins if trusted | none | [Architecture](docs/architecture.md#zero-remote-code-execution) |
 | Downloads at run time | llama.cpp builds, models, model lists | nothing | same |
 | Install (Linux, empty venv) | 42 packages, 46 MiB | 10 packages, 19 MiB | `uv sync` / `uv pip install` |
-| Heph's own code | 1.76 MB Python | 103 KB Python + 46 KB Bend | [`src/heph`](src/heph), [`core`](core) |
+| Heph's own code | 1.76 MB Python | 110 KB Python + 46 KB Bend | [`src/heph`](src/heph), [`core`](core) |
 | Armory | files go in `materials/` | any folder | [Armories](docs/armories.md) |
 | Interface | full-screen TUI | full-screen command line | screenshot above |
 

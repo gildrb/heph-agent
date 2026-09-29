@@ -21,20 +21,23 @@ material. Heph keeps its own state in `.harness/`.
 | `heph init` | the current folder |
 | `heph init <name>` | `$HEPH_ARMORY_HOME/<name>` (default `~/.armories/<name>`) |
 | `heph init <path>` | that path (anything with a `/`, or starting with `.` or `~`) |
-| `/init`, `/init <name>` | the same, inside `heph` |
+| `/armory`, then "use this folder" or "new armory" | the same, inside `heph` |
 
 Heph refuses to make your home folder or `/` an armory.
 
 | Open an armory | What happens |
 | --- | --- |
 | `heph` in an armory | opens it |
-| `heph` anywhere else | lists the armories in `~/.armories`; type a number or name |
+| `heph` anywhere else | opens the Heph guide, `~/.armories/heph-guide` |
 | `heph <name\|path>` | opens that armory |
-| `/armory [name]` | lists armories, or switches to one, inside `heph` |
+| `/armory [name]` | picks an armory (most recently used first), or switches to one |
 
-Add files by copying them into the folder, or with `/add <path>...` inside `heph`, which
-copies files or folders in (never overwrites) and re-indexes. Copy or sync the folder to
-move an armory; it holds no absolute paths.
+Add files by copying them into the folder, or with `/add [path]...` inside `heph`, which
+copies files or folders in (never overwrites) and re-indexes. Heph re-indexes changed files
+before each question. Copy or sync the folder to move an armory; it holds no absolute paths.
+
+The Heph guide is an ordinary armory. Heph creates it on first use and rewrites its pages
+from the installed version each time it opens; other files you add there are kept.
 
 ## Materials
 
