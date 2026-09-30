@@ -5,7 +5,7 @@ the source. An **armory** is any folder you run `heph init` in; Heph keeps its s
 `.harness/` inside it. Heph is a plain command line that talks to your local model.
 
 <p align="center">
-  <img alt="Heph answering a question with a verified citation" src="assets/app-screenshot.png" width="100%">
+  <img alt="The Heph guide answering &quot;how do I add my own files?&quot; with verified citations" src="assets/app-screenshot.png" width="100%">
 </p>
 
 ## Install
