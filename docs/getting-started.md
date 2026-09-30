@@ -57,19 +57,37 @@ heph ask notes "What does the report conclude?"
 heph ask notes "What does the report conclude?" --json
 ```
 
-In a session, type a question and press Enter. The answer streams into the terminal.
-Each citation is colored once it has been checked: green for a verified quote, yellow for
-a citation without a quote, red for a quote that does not match or an unknown evidence id.
-A sources footer lists every citation, and a stats line shows the model, tokens, tok/s
-and time. The line at the bottom shows the armory, its file count, the model and login.
-New, changed and deleted files are re-indexed before the next question.
+In a session, type a question and press Enter. Heph echoes it, then shows:
+
+| Line | Means |
+| --- | --- |
+| `Read 5 passages   a.md  b.pdf` | the files whose passages were sent to the model |
+| `Esc  Thinking…  4s` | working; the answer streams in above this line; Esc stops it |
+| `Thought for 6.2s` | time from the request to the first word of the answer |
+| the answer | citations colored once checked: green verified, yellow no quote, red not found |
+| `✓ E1  a.md   2 quotes verified` | one line per cited passage |
+| `qwen3.8-27b   in 2.3K   out 1.7K   9.9s   174 tok/s` | model, tokens, time, speed |
+
+Under the prompt, the status bar shows the model, the armory and its file count, and the
+login on the right. New, changed and deleted files are re-indexed before the next question.
 
 Outside an armory, `heph` opens the Heph guide (`~/.armories/heph-guide`): pages about
 Heph itself, refreshed from the installed version. Ask it how Heph works.
 
 Type `/` for the command menu; it narrows as you type. Commands are forgiving: `/mod`,
 `/mdl` and `/modle` all run `/model`. Commands without an argument open a picker: type to
-filter, arrows move, Enter picks, Esc skips.
+filter, arrows move, Enter picks, Esc skips. In the `/` menu, Tab completes and Enter runs.
+
+| Key | Action |
+| --- | --- |
+| Esc | stop an answer; what you typed meanwhile stays in the prompt |
+| Ctrl+C | clear the line; twice on an empty line to quit |
+| Ctrl+D | quit |
+| Ctrl+L | pick a model |
+| Ctrl+O | show the passages behind the last answer, in full |
+| Ctrl+T | show or hide the model's thinking after each answer |
+| Alt+Enter | new line |
+| Up, Down | earlier questions |
 
 | Command | Action |
 | --- | --- |
@@ -79,9 +97,9 @@ filter, arrows move, Enter picks, Esc skips.
 | `/login [provider]` | add a login: OpenAI, OpenRouter, DeepSeek, Z.AI, Codex, local |
 | `/logout [login]` | remove a login and its saved key |
 | `/new` | start a new chat |
-| `/sources` | show the evidence of the last answer |
-| `/help` | list commands |
-| `/exit` | quit (Ctrl-D works too) |
+| `/sources` | show the passages behind the last answer (Ctrl+O) |
+| `/help` | list commands and keys |
+| `/exit` | quit (Ctrl+D works too) |
 
 ## CLI
 

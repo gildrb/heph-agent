@@ -1,4 +1,4 @@
-"""The interactive session: ask right away; switch armories and models from pickers."""
+"""The interactive session: ask right away; switch armories and models from pickers or keys."""
 
 import os
 import shlex
@@ -12,8 +12,8 @@ from heph.config import Config, load
 from heph.fuzzy import rank
 from heph.index import Index, build
 from heph.llm import AuthError
-from heph.prompt import Option, pick
-from heph.render import SEP, Renderer
+from heph.prompt import Action, Key, Option, pick
+from heph.render import Renderer
 from heph.session import Chat
 
 _ADD_SERVER = "+server"
@@ -21,7 +21,7 @@ _LOG_IN = "+login"
 
 
 def index_armory(root: Path, renderer: Renderer, *, quiet: bool) -> Index:
-    with renderer.status("Indexing"):
+    with renderer.working("Indexing"):
         index, report = build(
             root, lambda n, total, source: renderer.update(f"Indexing {n}/{total} {source}")
         )
@@ -40,8 +40,11 @@ def engine_for(config: Config, index: Index) -> Engine:
     return Engine(client, model, config, index)
 
 
-def turn(engine: Engine, chat: Chat, question: str, renderer: Renderer) -> Result:
-    with renderer.status(f"Waiting for {engine.model}"):
+def turn(
+    engine: Engine, chat: Chat, question: str, renderer: Renderer, *, esc: bool = False
+) -> Result:
+    """One answer; `esc` when something listens for Esc to stop it."""
+    with renderer.working("Searching", esc=esc):
         result = ask(engine, chat.turns, question, renderer)
     renderer.finish(result)
     chat.add(result)
@@ -84,38 +87,50 @@ class Repl:
             "logout": lambda: [item.name for item in self.saved.items],
         }
         self.input = prompt.Input(choices, self.status)
-        self.open = self._open(root, Chat.new(root))
+        self.open = self._open(root, Chat.new(root), quiet=True)
         self.input.history(_history(root))
-        self._hint()
+        self.out.title(f"heph {root.name}")
+        self.connect_model()
 
     # Armories
 
-    def _open(self, root: Path, chat: Chat) -> _Open:
+    def _open(self, root: Path, chat: Chat, *, quiet: bool) -> _Open:
         snapshot = armory.snapshot(root)
-        index = index_armory(root, self.out, quiet=True)
+        index = index_armory(root, self.out, quiet=quiet)
         files = len({chunk.source for chunk in index.chunks})
         return _Open(root, index, files, snapshot, chat)
 
-    def _hint(self) -> None:
+    def connect_model(self) -> None:
+        """Gets the model ready before the first question, so the status bar can name it and
+        a server that is down is reported now, not after the user has typed a question."""
+        try:
+            self.open.engine = engine_for(self.config, self.open.index)
+        except HephError as exc:
+            self.out.error(str(exc))
+
+    def placeholder(self) -> str:
+        """What the empty prompt suggests, so a new user knows what to do."""
         root = self.open.root
         if root.name == armory.GUIDE:
-            self.out.note("This is the Heph guide. Ask it anything: how do I add my own files?")
-        elif not self.open.files:
-            self.out.note(f"{root.name} is empty: /add files, or copy them into {root}.")
+            return "Ask about Heph, like: how do I add my own files?   / for commands"
+        if not self.open.files:
+            return f"{root.name} is empty: /add a file or folder, then ask"
+        return f"Ask about {root.name}   / for commands"
 
     def enter(self, root: Path) -> None:
-        self.open = self._open(root, Chat.new(root))
+        self.open = self._open(root, Chat.new(root), quiet=True)
         self.input.history(_history(root))
+        self.out.title(f"heph {root.name}")
         self.out.note(f"Opened {root.name}.")
-        self._hint()
+        self.connect_model()
 
-    def status(self) -> str:
-        """The line at the bottom: armory, files, model, login."""
+    def status(self) -> tuple[list[str], list[str]]:
+        """The bar under the prompt: model, armory and files; the login on the right."""
         login, model = logins.active(self.saved)
         engine = self.open.engine
+        using = engine.model if engine else model
         files = _plural(self.open.files, "file")
-        parts = (self.open.root.name, files, engine.model if engine else model, login.name)
-        return SEP.join(part for part in (*parts, "/ for commands") if part)
+        return [using or login.name, self.open.root.name, files], [login.name] if using else []
 
     def armory(self, arg: str) -> None:
         if arg:
@@ -172,8 +187,13 @@ class Repl:
                 self.reindex()
 
     def reindex(self) -> None:
+        """Brings the index up to date, keeping the chat and the model."""
         current = self.open
-        self.open = replace(self._open(current.root, current.chat), last=current.last)
+        fresh = self._open(current.root, current.chat, quiet=False)
+        engine = current.engine
+        if engine is not None:
+            engine = replace(engine, index=fresh.index)
+        self.open = replace(fresh, engine=engine, last=current.last)
 
     # Models and logins
 
@@ -191,7 +211,7 @@ class Repl:
     def scan(self) -> dict[str, str]:
         """Asks every login for its models; answers the logins that failed, with why."""
         problems: dict[str, str] = {}
-        with self.out.status("Checking logins"):
+        with self.out.working("Checking logins"):
             for login in self.all_logins():
                 try:
                     self.catalog[login.name] = logins.client(login).models()
@@ -269,7 +289,7 @@ class Repl:
             logins.write_private(logins.key_path(login.name), key + "\n")
             found = logins.client(login).models()
         except HephError as exc:
-            self.out.note(f"Saved, but {login.name} did not answer: {exc}", "yellow")
+            self.out.warn(f"Saved, but {login.name} did not answer: {exc}")
             found = []
         self.catalog[login.name] = found
         self.saved = logins.add(self.saved, login)
@@ -334,14 +354,36 @@ class Repl:
 
     def sources(self, _arg: str) -> None:
         last = self.open.last
-        self.out.sources(last.evidence if last else ())
+        if last is None:
+            self.out.note("No passages yet: ask a question first.")
+            return
+        self.out.sources(last.evidence, last.citations)
+
+    def help(self, _arg: str) -> None:
+        self.out.rows(prompt.help_rows())
+        self.out.gap()
+        self.out.note("Commands forgive typos: /ar, /arm and /armroy all find /armory.")
+
+    def key(self, name: Action) -> None:
+        match name:
+            case "model":
+                self.model("")
+            case "sources":
+                self.sources("")
+            case "thinking":
+                self.out.show_thinking = not self.out.show_thinking
+                shown = "shown" if self.out.show_thinking else "hidden"
+                self.out.note(f"Thinking: {shown} after each answer (ctrl+t switches).")
 
     def question(self, line: str) -> None:
+        self.out.question(line)
         if armory.snapshot(self.open.root) != self.open.snapshot:
             self.reindex()
         current = self.open
-        current.engine = current.engine or engine_for(self.config, current.index)
-        current.last = turn(current.engine, current.chat, line, self.out)
+        if current.engine is None:
+            current.engine = engine_for(self.config, current.index)
+        with self.input.busy():
+            current.last = turn(current.engine, current.chat, line, self.out, esc=True)
 
     def command(self, line: str) -> bool:
         """Handles a slash command, forgiving typos in its name; returns False to quit."""
@@ -350,7 +392,7 @@ class Repl:
         if found == "exit":
             return False
         handlers: dict[str, Callable[[str], None]] = {
-            "help": lambda _: self.out.note(prompt.help_text(), style=""),
+            "help": self.help,
             "model": self.model,
             "armory": self.armory,
             "add": self.add,
@@ -360,31 +402,35 @@ class Repl:
             "logout": self.logout,
         }
         if found is None or found not in handlers:
-            self.out.note(f"No command like /{name}; type / to see them.", "yellow")
+            self.out.warn(f"No command like /{name}; type / to see them.")
         else:
             handlers[found](rest.strip())
         return True
 
     def loop(self) -> None:
         while True:
+            self.out.gap()
             try:
-                line = self.input.read().strip()
+                read = self.input.read(self.placeholder())
             except KeyboardInterrupt:
-                self.out.console.print()
                 continue
             except EOFError:
-                self.out.console.print()
                 return
             try:
-                if line.startswith("/"):
-                    if not self.command(line):
-                        return
-                elif line:
-                    self.question(line)
+                match read:
+                    case Key(name=name):
+                        self.key(name)
+                    case str(text) if text.strip().startswith("/"):
+                        if not self.command(text.strip()):
+                            return
+                    case str(text) if text.strip():
+                        self.question(text.strip())
+                    case _:
+                        pass
             except HephError as exc:
-                self.out.note(f"error: {exc}", "red")
+                self.out.error(str(exc))
             except KeyboardInterrupt:
-                self.out.note("interrupted", "yellow")
+                self.out.warn("Stopped.")
 
 
 def run(arg: str | None, out: Renderer) -> None:
@@ -396,4 +442,8 @@ def run(arg: str | None, out: Renderer) -> None:
         root = here
     else:
         root = armory.guide()
-    Repl(out, root).loop()
+    repl = Repl(out, root)
+    try:
+        repl.loop()
+    finally:
+        repl.input.close()

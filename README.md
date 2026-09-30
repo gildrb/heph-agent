@@ -66,8 +66,17 @@ Type `/` for the command menu. Commands are forgiving: `/mod`, `/mdl` and `/modl
 `/model`. Pickers filter as you type; arrows move, Enter picks, Esc skips. New, changed and
 deleted files are re-indexed before the next question.
 
-Answers cite evidence as `[E1: "quoted words"]`, and Heph checks each quote against that
-passage: ✓ found, ✗ not found or unknown passage, ? no quote.
+| Key | Does |
+| --- | --- |
+| Esc | stops an answer; what you typed meanwhile stays in the prompt |
+| Ctrl+C | clears the line; twice on an empty line quits (Ctrl+D quits too) |
+| Ctrl+L, Ctrl+O, Ctrl+T | model picker; the passages behind the last answer; the model's thinking |
+| Alt+Enter | new line |
+
+Each answer shows the files Heph read, how long the model thought, the answer, one line
+per cited passage and the token stats. Answers cite evidence as `[E1: "quoted words"]`,
+and Heph checks each quote against that passage: ✓ found, ✗ not found or unknown
+passage, ? no quote.
 
 With no login, Heph uses a server at `http://127.0.0.1:8080/v1` (llama.cpp
 `llama-server`). `/model http://host:port/v1` adds any other local server (vLLM, SGLang,
@@ -84,9 +93,9 @@ See [Configuration](docs/configuration.md).
 | Model tools | files and web; shell and plugins if trusted | none | [Architecture](docs/architecture.md#zero-remote-code-execution) |
 | Downloads at run time | llama.cpp builds, models, model lists | nothing | same |
 | Install (Linux, empty venv) | 42 packages, 46 MiB | 10 packages, 19 MiB | `uv sync` / `uv pip install` |
-| Heph's own code | 1.76 MB Python | 110 KB Python + 46 KB Bend | [`src/heph`](src/heph), [`core`](core) |
+| Heph's own code | 1.76 MB Python | 134 KB Python + 46 KB Bend | [`src/heph`](src/heph), [`core`](core) |
 | Armory | files go in `materials/` | any folder | [Armories](docs/armories.md) |
-| Interface | full-screen TUI | full-screen command line | screenshot above |
+| Interface | full-screen TUI | command line in the style of oh-my-pi | screenshot above |
 
 ## Design
 

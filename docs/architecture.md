@@ -17,8 +17,8 @@ answer ─ parse citations ─ core: verify ─ rendered answer + sources + stat
 | Module | Role |
 | --- | --- |
 | `cli.py` | argparse entry point: `init`, `index`, `ask`, `config`, the session |
-| `repl.py` | interactive session: slash commands, pickers, re-index on file changes |
-| `prompt.py` | input line: fuzzy slash-command completion, arrow-key pickers, status line, history |
+| `repl.py` | interactive session: slash commands, pickers, keys, re-index on file changes |
+| `prompt.py` | input in oh-my-pi's style: borderless editor, slash menu, status bar, pickers, Esc while answering |
 | `fuzzy.py` | forgiving name matching: exact, prefix, letters in order, typos |
 | `guide/` | the Heph guide armory's pages, copied to `~/.armories/heph-guide` |
 | `config.py` | `config.toml` settings |
@@ -30,7 +30,7 @@ answer ─ parse citations ─ core: verify ─ rendered answer + sources + stat
 | `index.py` | per-file index caches, tokenizer, postings, retrieval |
 | `llm.py` | stdlib HTTP client: streaming chat completions, `GET /models` |
 | `answer.py` | one turn: retrieve, prompt, stream, verify citations |
-| `render.py` | terminal output (rich): citations, sources footer, stats |
+| `render.py` | terminal output: shimmering working line, streamed Markdown, checked citations, sources, stats |
 | `session.py` | chat persistence in `.harness/chats/` |
 
 Runtime dependencies: `pypdfium2`, `defusedxml`, `rich`, `prompt-toolkit`, `certifi`, all

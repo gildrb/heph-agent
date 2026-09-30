@@ -143,13 +143,14 @@ def resolve(arg: str | None) -> Path:
     path = Path(arg).expanduser()
     if os.sep in arg or arg.startswith((".", "~")):
         return validate(path)
+    if arg == GUIDE:
+        return guide()  # always this version's pages
     named = armory_home() / arg
-    if (named / MARKER).is_file():
-        return validate(named)
-    if (path / MARKER).is_file():
-        return validate(path)
-    if matches := rank(arg, [p.name for p in known()]):
-        return validate(armory_home() / matches[0])
+    if not (named / MARKER).is_file():
+        if (path / MARKER).is_file():
+            return validate(path)
+        if matches := rank(arg, [p.name for p in known()]):
+            named = armory_home() / matches[0]
     return validate(named)
 
 

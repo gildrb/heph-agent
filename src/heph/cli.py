@@ -9,7 +9,7 @@ from importlib.metadata import version
 from rich.text import Text
 
 from heph import HephError, armory, logins, repl
-from heph.answer import Citation, ask
+from heph.answer import Citation, Evidence, ask
 from heph.config import load
 from heph.render import SEP, Renderer, console
 from heph.session import Chat
@@ -51,7 +51,13 @@ def _parser() -> argparse.ArgumentParser:
 class _Quiet:
     """Event sink for --json: the result is printed once, at the end."""
 
+    def evidence(self, items: Sequence[Evidence]) -> None:
+        del items
+
     def reasoning(self, text: str) -> None:
+        del text
+
+    def draft(self, text: str) -> None:
         del text
 
     def block(self, text: str, offset: int, citations: Sequence[Citation]) -> None:
@@ -63,8 +69,8 @@ def _run(args: Args, out: Renderer, err: Renderer) -> None:
         case "init":
             root = armory.init(args.target)
             run = "heph" if args.target is None else f"heph {args.target}"
-            out.note(f"Created armory {root}. Every file in it is material.", "")
-            out.note(f"Run `{run}` to ask questions; add files any time.", "")
+            out.plain(f"Created armory {root}. Every file in it is material.")
+            out.plain(f"Run `{run}` to ask questions; add files any time.")
         case "index":
             _ = repl.index_armory(armory.resolve(args.armory), out, quiet=False)
         case "ask":
@@ -81,21 +87,21 @@ def _run(args: Args, out: Renderer, err: Renderer) -> None:
         case "config":
             config = load()
             state = "" if config.path.exists() else " (not created; defaults in effect)"
-            out.note(f"settings: {config.path}{state}", "")
+            out.plain(f"settings: {config.path}{state}")
             for key, value in (
                 ("max_tokens", config.max_tokens),
                 ("temperature", config.temperature),
                 ("evidence_tokens", config.evidence_tokens),
             ):
-                out.note(f"  {key} = {value}", "")
+                out.plain(f"  {key} = {value}")
             saved = logins.load()
             login, model = logins.active(saved)
-            out.note(f"logins: {saved.path}", "")
+            out.plain(f"logins: {saved.path}")
             for item in saved.items or (login,):
                 title = logins.PROVIDERS[item.provider].title
                 where = item.base_url or title
                 using = f"{SEP}(active, {model or 'first listed model'})" if item == login else ""
-                out.note(f"  {item.name}{SEP}{where}{using}", "")
+                out.plain(f"  {item.name}{SEP}{where}{using}")
         case _:
             repl.run(args.armory, out)
 

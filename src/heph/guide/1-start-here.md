@@ -15,7 +15,7 @@ An armory is a folder of files that Heph answers from. Every file in the folder 
 material: notes, PDFs, Word documents, slides, spreadsheets, code. Heph never changes
 your files. It keeps its index and chats in a hidden `.harness` folder inside the armory.
 
-You are in one armory at a time. Its name is shown at the bottom of the screen.
+You are in one armory at a time. Its name is shown under the prompt, next to the model.
 
 ## The first three things to do
 

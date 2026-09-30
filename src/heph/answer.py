@@ -21,7 +21,7 @@ _STATUS: dict[core.Verdict, Status] = {
 _MAX_HITS = 12
 _FENCE = re.compile(r"(`{3,}|~{3,})(.*)")
 _HISTORY_TURNS = 3
-_CITATION = re.compile(
+CITATION = re.compile(
     r"[\[【]\s*[Ee](\d+)\s*(?::\s*[\"“”„«]([^\]】]*?)[\"“”»]\s*)?[\]】]"
     r"|[\[【]\s*([Ee]\d+(?:\s*[,;]\s*[Ee]\d+)+)\s*[\]】]"
 )
@@ -95,7 +95,11 @@ class Result:
 
 
 class Events(Protocol):
+    def evidence(self, items: Sequence[Evidence]) -> None: ...
+
     def reasoning(self, text: str) -> None: ...
+
+    def draft(self, text: str) -> None: ...
 
     def block(self, text: str, offset: int, citations: Sequence[Citation]) -> None: ...
 
@@ -133,7 +137,7 @@ def messages(
 def cite(evidence: Sequence[Evidence], text: str, base: int) -> list[Citation]:
     """Parses citations in `text` and verifies quotes with heph-core; offsets shifted by base."""
     found: list[tuple[int, str | None, int, int]] = []
-    for match in _CITATION.finditer(text):
+    for match in CITATION.finditer(text):
         start, end = match.start() + base, match.end() + base
         if match.group(3):
             ids = re.finditer(r"\d+", match.group(3))
@@ -209,6 +213,7 @@ def ask(
     started = time.monotonic()
     config = engine.config
     evidence = retrieve(engine.index, question, config.evidence_tokens)
+    events.evidence(evidence)
     prompt = messages(history, evidence, question)
     blocks = _Blocks()
     citations: list[Citation] = []
@@ -233,6 +238,7 @@ def ask(
             events.reasoning(item.text)
         else:
             emit(blocks.feed(item.text))
+            events.draft(blocks.text[blocks.start :])
     emit(blocks.flush())
     if not blocks.text.strip():
         if finish == "length":

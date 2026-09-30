@@ -2,15 +2,15 @@
 
 ## Which model does Heph use?
 
-The model and login in use are shown at the bottom of the screen. By default Heph talks
-to a local OpenAI-compatible server at http://127.0.0.1:8080/v1, such as llama.cpp,
-LM Studio, Ollama or vLLM, and uses the first model that server lists.
+The model in use is shown under the prompt, and the login it runs on at the right. By
+default Heph talks to a local OpenAI-compatible server at http://127.0.0.1:8080/v1, such
+as llama.cpp, LM Studio, Ollama or vLLM, and uses the first model that server lists.
 
 ## How do I change the model?
 
-Type `/model`. It lists every model of every login; pick one with the arrow keys and
-Enter, or type to filter. `/model qwen` switches straight to the closest match.
-Your choice is saved and used next time.
+Type `/model` or press Ctrl+L. It lists every model of every login; pick one with the
+arrow keys and Enter, or type to filter. `/model qwen` switches straight to the closest
+match. Your choice is saved and used next time.
 
 ## How do I use my own local server?
 

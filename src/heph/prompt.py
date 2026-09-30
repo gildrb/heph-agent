@@ -1,27 +1,41 @@
-"""Interactive input: fuzzy slash commands, arrow-key pickers, and a status line."""
+"""Interactive input in the style of oh-my-pi: a borderless editor with the status bar under
+it, a fuzzy slash-command menu, arrow-key pickers, and Esc to stop an answer."""
 
+import asyncio
+import os
+import select
+import signal
 import sys
-from collections.abc import Callable, Iterable, Mapping, Sequence
+import termios
+import threading
+import time
+import tty
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from getpass import getpass
 from pathlib import Path
+from typing import Literal
 
-from prompt_toolkit import PromptSession, prompt
-from prompt_toolkit.application import Application
+from prompt_toolkit import prompt
+from prompt_toolkit.application import Application, get_app
 from prompt_toolkit.buffer import Buffer
-from prompt_toolkit.completion import CompleteEvent, Completer, Completion, PathCompleter
+from prompt_toolkit.completion import CompleteEvent, PathCompleter
 from prompt_toolkit.document import Document
-from prompt_toolkit.filters import has_completions
+from prompt_toolkit.filters import Condition
 from prompt_toolkit.formatted_text import StyleAndTextTuples
 from prompt_toolkit.history import FileHistory, History, InMemoryHistory
-from prompt_toolkit.key_binding import KeyBindings, KeyPressEvent
-from prompt_toolkit.layout import HSplit, Layout, Window
+from prompt_toolkit.key_binding import KeyBindings, KeyPressEvent, merge_key_bindings
+from prompt_toolkit.key_binding.defaults import load_key_bindings
+from prompt_toolkit.layout import ConditionalContainer, HSplit, Layout, Window
 from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
+from prompt_toolkit.layout.processors import AfterInput, ConditionalProcessor
 from prompt_toolkit.styles import Style
+from prompt_toolkit.utils import get_cwidth
 
 from heph.fuzzy import order, rank
+from heph.render import ACCENT, ARROW, DIM, SEP, WARN
 
-PROMPT = "\N{SINGLE RIGHT-POINTING ANGLE QUOTATION MARK} "
 # name: (arguments, what it does); the order is the menu order for an empty query
 COMMANDS: dict[str, tuple[str, str]] = {
     "model": ("", "pick the model, add a local server, or log in"),
@@ -31,23 +45,43 @@ COMMANDS: dict[str, tuple[str, str]] = {
     "sources": ("", "show the passages behind the last answer"),
     "login": ("", "log in to OpenAI, OpenRouter, DeepSeek, Z.AI or ChatGPT"),
     "logout": ("", "remove a login"),
-    "help": ("", "show commands"),
-    "exit": ("", "quit (Ctrl-D works too)"),
+    "help": ("", "show commands and keys"),
+    "exit": ("", "quit"),
 }
+KEYS: tuple[tuple[str, str], ...] = (
+    ("esc", "stop an answer"),
+    ("ctrl+c", "clear the line; twice to quit"),
+    ("ctrl+d", "quit"),
+    ("ctrl+l", "pick a model"),
+    ("ctrl+o", "show the passages behind the last answer"),
+    ("ctrl+t", "show or hide the model's thinking"),
+    ("alt+enter", "new line"),
+    ("up, down", "earlier questions"),
+)
 _ALIASES = {"quit": "exit"}
+_ROWS = 10  # menu rows shown at once
+_NAME_WIDTH = 32  # widest name column, as in oh-my-pi
+_TWICE = 1.0  # seconds within which a second ctrl+c on an empty line quits
+_ESC = b"\x1b"
+_ERASE = frozenset("\x7f\b")
 _STYLE = Style.from_dict(
     {
-        "bottom-toolbar": "noreverse fg:ansibrightblack",
+        # own class names: prompt_toolkit's built-in style paints anything named "menu" grey
+        "hp.prompt": ACCENT,
+        "hp.placeholder": DIM,
+        "hp.current": ACCENT,
+        "hp.dim": DIM,
+        "hp.status": DIM,
+        "hp.model": "",
+        "hp.hint": WARN,
+        "hp.title": f"bold {ACCENT}",
         "completion-menu": "bg:default",
         "completion-menu.completion": "bg:default fg:default",
-        "completion-menu.completion.current": "reverse",
-        "completion-menu.meta.completion": "bg:default fg:ansibrightblack",
-        "completion-menu.meta.completion.current": "reverse",
+        "completion-menu.completion.current": f"bg:default {ACCENT}",
+        "completion-menu.meta.completion": f"bg:default {DIM}",
+        "completion-menu.meta.completion.current": f"bg:default {ACCENT}",
         "scrollbar.background": "bg:default",
-        "scrollbar.button": "bg:ansibrightblack",
-        "pick.title": "bold",
-        "pick.current": "reverse",
-        "pick.detail": "fg:ansibrightblack",
+        "scrollbar.button": f"bg:{DIM}",
     }
 )
 
@@ -57,6 +91,60 @@ class Option:
     value: str
     label: str
     detail: str = ""
+
+
+type Action = Literal["model", "sources", "thinking"]
+
+
+@dataclass(frozen=True, slots=True)
+class Key:
+    """A key that asks the session to do something, instead of a typed line."""
+
+    name: Action
+
+
+@dataclass(frozen=True, slots=True)
+class _Match:
+    text: str  # the whole line once applied
+    name: str
+    about: str = ""
+    runs: bool = True  # Enter applies and submits; a path only completes (Tab)
+
+
+def _rows(items: Sequence[tuple[str, str]], selected: int, limit: int) -> StyleAndTextTuples:
+    """Rows as oh-my-pi's select list draws them: the selection marked and accented, names in a
+    column, descriptions dimmed, a window that follows the selection, a count when it scrolls."""
+    start = min(max(selected - limit // 2, 0), max(len(items) - limit, 0))
+    shown = list(enumerate(items))[start : start + limit]
+    width = min(max((get_cwidth(name) for _, (name, _) in shown), default=0), _NAME_WIDTH)
+    lines: list[StyleAndTextTuples] = []
+    for index, (name, about) in shown:
+        current = index == selected
+        style = "class:hp.current" if current else ""
+        line: StyleAndTextTuples = []
+        line.append((style, f"{ARROW if current else ' '} "))
+        line.append((style, name + " " * max(width - get_cwidth(name), 0)))
+        if about:
+            line.append((style or "class:hp.dim", f"  {about}"))
+        lines.append(line)
+    if len(items) > limit:
+        lines.append([("class:hp.dim", f"  ({selected + 1}/{len(items)})")])
+    out: StyleAndTextTuples = []
+    for number, line in enumerate(lines):
+        out += [("", "\n")] if number else []
+        out += line
+    return out
+
+
+def _typed(text: str) -> str:
+    """What a burst of keystrokes leaves on a line: printable text, with backspace applied."""
+    out: list[str] = []
+    for char in text:
+        if char in _ERASE:
+            out = out[:-1]
+        elif char.isprintable():
+            out.append(char)
+    return "".join(out)
 
 
 class _Picker:
@@ -72,27 +160,18 @@ class _Picker:
     def _reset(self, _buffer: Buffer) -> None:
         self.selected = 0
 
-    def shown(self) -> tuple[list[Option], int]:
-        """The matches that fit on screen, and how many more there are."""
+    def found(self) -> list[Option]:
         texts = [f"{option.label} {option.detail}" for option in self.options]
-        found = [self.options[index] for index in order(self.query.text, texts)]
-        return found[: self.rows], max(len(found) - self.rows, 0)
+        return [self.options[index] for index in order(self.query.text, texts)]
 
     def lines(self) -> StyleAndTextTuples:
-        shown, more = self.shown()
-        self.selected = min(self.selected, max(len(shown) - 1, 0))
-        out: StyleAndTextTuples = []
-        width = max((len(option.label) for option in shown), default=0)
-        for index, option in enumerate(shown):
-            current = index == self.selected
-            out.append(("class:pick.current" if current else "", f" {option.label.ljust(width)} "))
-            if option.detail:
-                out.append(("class:pick.detail", f"  {option.detail}"))
-            out.append(("", "\n"))
-        if not shown:
-            out.append(("class:pick.detail", " nothing matches\n"))
-        keys = "type to filter   ↑↓ move   Enter pick   Esc skip"
-        out.append(("class:pick.detail", f" +{more} more   {keys}" if more else f" {keys}"))
+        found = self.found()
+        self.selected = min(self.selected, max(len(found) - 1, 0))
+        items = [(option.label, option.detail) for option in found]
+        out = _rows(items, self.selected, self.rows) if items else []
+        if not items:
+            out.append(("class:hp.dim", "  nothing matches"))
+        out.append(("class:hp.dim", "\n  type to filter   ↑↓ move   enter pick   esc cancel"))
         return out
 
     def run(self) -> str | None:
@@ -103,19 +182,21 @@ class _Picker:
         @keys.add("s-tab")
         def _up(event: KeyPressEvent) -> None:
             del event
-            self.selected = max(self.selected - 1, 0)
+            count = len(self.found())
+            self.selected = (self.selected - 1) % count if count else 0
 
         @keys.add("down")
         @keys.add("c-n")
         @keys.add("tab")
         def _down(event: KeyPressEvent) -> None:
             del event
-            self.selected = min(self.selected + 1, max(len(self.shown()[0]) - 1, 0))
+            count = len(self.found())
+            self.selected = (self.selected + 1) % count if count else 0
 
         @keys.add("enter")
         def _pick(event: KeyPressEvent) -> None:
-            shown = self.shown()[0]
-            event.app.exit(result=shown[self.selected].value if shown else None)
+            found = self.found()
+            event.app.exit(result=found[self.selected].value if found else None)
 
         @keys.add("escape", eager=True)
         @keys.add("c-c")
@@ -124,12 +205,12 @@ class _Picker:
             event.app.exit(result=None)
 
         def prefix(_line: int, _wrap: int) -> StyleAndTextTuples:
-            return [("", PROMPT)]
+            return [("class:hp.placeholder", "  filter ")]
 
         layout = Layout(
             HSplit(
                 [
-                    Window(FormattedTextControl([("class:pick.title", self.title)]), height=1),
+                    Window(FormattedTextControl([("class:hp.title", self.title)]), height=1),
                     Window(BufferControl(self.query), height=1, get_line_prefix=prefix),
                     Window(FormattedTextControl(self.lines)),
                 ]
@@ -143,7 +224,7 @@ class _Picker:
 
 
 def pick(title: str, options: Sequence[Option], rows: int = 12) -> str | None:
-    """Lets the user choose one option; None when they skip (Esc, Ctrl-C) or there is none."""
+    """Lets the user choose one option; None when they skip (Esc, Ctrl+C) or there is none."""
     if not options:
         return None
     if sys.stdin.isatty():
@@ -152,7 +233,7 @@ def pick(title: str, options: Sequence[Option], rows: int = 12) -> str | None:
     for number, option in enumerate(options, 1):
         print(f"  {number}  {option.label}  {option.detail}".rstrip())
     try:
-        answer = input(PROMPT).strip()
+        answer = input(f"{ARROW} ").strip()
     except EOFError:
         return None
     if answer.isdigit() and 1 <= int(answer) <= len(options):
@@ -167,90 +248,289 @@ def command(name: str) -> str | None:
     return _ALIASES.get(ranked[0], ranked[0]) if ranked else None
 
 
-def help_text() -> str:
-    usage = {name: f"/{name} {args}".rstrip() for name, (args, _) in COMMANDS.items()}
-    width = max(map(len, usage.values())) + 2
-    lines = [usage[name].ljust(width) + about for name, (_, about) in COMMANDS.items()]
-    lines.append("Commands are forgiving: /ar, /arm and /armroy all find /armory.")
-    return "\n".join(lines)
-
-
-class _Completer(Completer):
-    """Fuzzy slash commands, then fuzzy names for their argument, or paths after /add."""
-
-    def __init__(self, choices: Mapping[str, Callable[[], list[str]]]) -> None:
-        self._choices = choices
-        self._paths = PathCompleter(expanduser=True)
-
-    def get_completions(
-        self, document: Document, complete_event: CompleteEvent
-    ) -> Iterable[Completion]:
-        text = document.text_before_cursor
-        if not text.startswith("/"):
-            return
-        name, space, arg = text[1:].partition(" ")
-        if not space:
-            for match in rank(name, list(COMMANDS)):
-                args, about = COMMANDS[match]
-                yield Completion(
-                    f"/{match}",
-                    start_position=-len(text),
-                    display=f"/{match} {args}".rstrip(),
-                    display_meta=about,
-                )
-            return
-        match command(name):
-            case "add":
-                token = arg.rsplit(" ", 1)[-1]
-                yield from self._paths.get_completions(Document(token), complete_event)
-            case str(found) if found in self._choices:
-                for choice in rank(arg.strip(), self._choices[found]()):
-                    yield Completion(choice, start_position=-len(arg))
-            case _:
-                return
+def help_rows() -> list[tuple[str, str]]:
+    """What /help shows: the commands, a blank row, then the keys."""
+    commands = [(f"/{name} {args}".rstrip(), about) for name, (args, about) in COMMANDS.items()]
+    return [*commands, ("", ""), *KEYS]
 
 
 class Input:
-    """Reads one line: in a terminal with history, completion and a status line."""
+    """Reads what the user types: in a terminal, a borderless editor with history, the
+    slash-command menu and the status bar under it; elsewhere, plain lines."""
 
     def __init__(
-        self, choices: Mapping[str, Callable[[], list[str]]], status: Callable[[], str]
+        self,
+        choices: Mapping[str, Callable[[], list[str]]],
+        status: Callable[[], tuple[list[str], list[str]]],
     ) -> None:
-        self._completer = _Completer(choices)
+        self._choices = choices
         self._status = status
-        self._session = self._new(InMemoryHistory())
-
-    def _new(self, history: History) -> PromptSession[str]:
-        keys = KeyBindings()
-
-        @keys.add("escape", eager=True, filter=has_completions)
-        def _close_menu(event: KeyPressEvent) -> None:
-            event.current_buffer.cancel_completion()
-
-        return PromptSession(
-            history=history,
-            completer=self._completer,
-            complete_while_typing=True,
-            bottom_toolbar=self._status,
-            key_bindings=keys,
-            style=_STYLE,
-        )
+        self._placeholder = ""
+        self._carry = ""  # typed while an answer streamed, or left in the editor by a key
+        self._matches: list[_Match] = []
+        self._selected = 0
+        self._closed = False  # Esc hid the menu, or history filled the line
+        self._recalling = False
+        self._armed = 0.0  # when ctrl+c last found the line empty
+        self._saved = termios.tcgetattr(sys.stdin.fileno()) if sys.stdin.isatty() else None
+        self._buffer, self._app = self._build(InMemoryHistory())
 
     def history(self, path: Path) -> None:
         """Switches to an armory's input history file."""
-        self._session = self._new(FileHistory(str(path)))
+        self._buffer, self._app = self._build(FileHistory(str(path)))
 
-    def read(self) -> str:
+    def close(self) -> None:
+        """Leaves the terminal in the mode Heph found it in."""
+        if self._saved is not None:
+            termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, self._saved)
+
+    # The slash-command menu
+
+    def _find(self, text: str) -> list[_Match]:
+        if not text.startswith("/") or "\n" in text:
+            return []
+        name, space, arg = text[1:].partition(" ")
+        if not space:
+            commands = rank(name, [*COMMANDS])
+            return [_Match(f"/{found} ", found, COMMANDS[found][1]) for found in commands]
+        found = command(name)
+        if found == "add":
+            head, _, token = arg.rpartition(" ")
+            base = f"/add {head} " if head else "/add "
+            completer = PathCompleter(expanduser=True)
+            paths = completer.get_completions(Document(token), CompleteEvent())
+            return [
+                _Match(
+                    base + token + path.text + ("/" if path.display_text.endswith("/") else ""),
+                    path.display_text,
+                    runs=False,
+                )
+                for path in paths
+            ]
+        if found is not None and found in self._choices:
+            chosen = rank(arg.strip(), self._choices[found]())
+            return [_Match(f"/{found} {choice}", choice) for choice in chosen]
+        return []
+
+    def _changed(self, buffer: Buffer) -> None:
+        self._matches = self._find(buffer.text)
+        self._selected = 0
+        self._closed = self._recalling
+
+    def _open(self) -> bool:
+        return bool(self._matches) and not self._closed
+
+    def _apply(self, match: _Match) -> None:
+        self._buffer.document = Document(match.text, len(match.text))
+
+    def _move(self, step: int) -> None:
+        self._selected = (self._selected + step) % len(self._matches)
+
+    # The editor
+
+    def _gutter(self, line: int, wrap: int) -> StyleAndTextTuples:
+        return [("class:hp.prompt", f"{ARROW} ")] if line == 0 and wrap == 0 else [("", "  ")]
+
+    def _menu(self) -> StyleAndTextTuples:
+        return _rows([(m.name, m.about) for m in self._matches], self._selected, _ROWS)
+
+    def _bar(self) -> StyleAndTextTuples:
+        """The status bar: what is in use on the left, where it runs on the right."""
+        if time.monotonic() - self._armed < _TWICE:
+            return [("class:hp.hint", "Press ctrl+c again to quit")]
+        left, right = self._status()
+        out: StyleAndTextTuples = [("class:hp.model", left[0])] if left else []
+        out += [("class:hp.status", SEP + part) for part in left[1:]]
+        tail = SEP.join(right)
+        used = sum(get_cwidth(fragment[1]) for fragment in out)
+        gap = get_app().output.get_size().columns - used - get_cwidth(tail)
+        if tail and gap >= len(SEP):
+            out.append(("class:hp.status", " " * gap + tail))
+        return out
+
+    def _accept(self, buffer: Buffer) -> bool:
+        get_app().exit(result=buffer.text)
+        return False
+
+    def _keys(self) -> KeyBindings:
+        menu = Condition(self._open)
+        empty = Condition(lambda: not get_app().current_buffer.text)
+        keys = KeyBindings()
+
+        @keys.add("enter")
+        def _enter(event: KeyPressEvent) -> None:
+            if self._open() and self._matches[self._selected].runs:
+                self._apply(self._matches[self._selected])
+            event.current_buffer.validate_and_handle()
+
+        @keys.add("tab", filter=menu)
+        def _complete(event: KeyPressEvent) -> None:
+            del event
+            self._apply(self._matches[self._selected])
+
+        @keys.add("up")
+        @keys.add("down")
+        def _arrow(event: KeyPressEvent) -> None:
+            up = event.key_sequence[0].key == "up"
+            if self._open():
+                self._move(-1 if up else 1)
+                return
+            self._recalling = True
+            if up:
+                event.current_buffer.auto_up(count=event.arg)
+            else:
+                event.current_buffer.auto_down(count=event.arg)
+            self._recalling = False
+
+        @keys.add("s-tab", filter=menu)
+        @keys.add("c-p", filter=menu)
+        def _previous(event: KeyPressEvent) -> None:
+            del event
+            self._move(-1)
+
+        @keys.add("c-n", filter=menu)
+        def _next(event: KeyPressEvent) -> None:
+            del event
+            self._move(1)
+
+        @keys.add("escape", eager=True, filter=menu)
+        def _close(event: KeyPressEvent) -> None:
+            del event
+            self._closed = True
+
+        @keys.add("escape", "enter")
+        @keys.add("c-j")
+        def _newline(event: KeyPressEvent) -> None:
+            event.current_buffer.insert_text("\n")
+
+        @keys.add("c-c")
+        def _clear(event: KeyPressEvent) -> None:
+            if event.current_buffer.text:
+                event.current_buffer.reset()
+                return
+            now = time.monotonic()
+            if now - self._armed < _TWICE:
+                event.app.exit(exception=EOFError())
+                return
+            self._armed = now
+            _ = asyncio.get_running_loop().call_later(_TWICE, event.app.invalidate)
+
+        @keys.add("c-d", filter=empty)
+        def _quit(event: KeyPressEvent) -> None:
+            event.app.exit(exception=EOFError())
+
+        actions: tuple[tuple[str, Action], ...] = (
+            ("c-l", "model"),
+            ("c-o", "sources"),
+            ("c-t", "thinking"),
+        )
+        for key, name in actions:
+            keys.add(key)(self._action(name))
+        return keys
+
+    def _action(self, name: Action) -> Callable[[KeyPressEvent], None]:
+        def run(event: KeyPressEvent) -> None:
+            self._carry = event.current_buffer.text
+            event.app.exit(result=Key(name))
+
+        return run
+
+    def _build(self, history: History) -> tuple[Buffer, Application[str | Key]]:
+        buffer = Buffer(
+            history=history,
+            multiline=True,
+            accept_handler=self._accept,
+            on_text_changed=self._changed,
+        )
+        menu = Condition(self._open)
+        placeholder = ConditionalProcessor(
+            AfterInput(lambda: self._placeholder, style="class:hp.placeholder"),
+            filter=Condition(lambda: not buffer.text),
+        )
+        editor = Window(
+            BufferControl(buffer, input_processors=[placeholder]),
+            get_line_prefix=self._gutter,
+            wrap_lines=True,
+            dont_extend_height=True,
+        )
+        layout = Layout(
+            HSplit(
+                [
+                    editor,
+                    ConditionalContainer(
+                        Window(FormattedTextControl(self._menu), dont_extend_height=True),
+                        filter=menu,
+                    ),
+                    ConditionalContainer(
+                        Window(FormattedTextControl(self._bar), height=1), filter=~menu
+                    ),
+                ]
+            ),
+            focused_element=editor,
+        )
+        app: Application[str | Key] = Application(
+            layout=layout,
+            key_bindings=merge_key_bindings([load_key_bindings(), self._keys()]),
+            style=_STYLE,
+            erase_when_done=True,
+        )
+        return buffer, app
+
+    def read(self, placeholder: str) -> str | Key:
+        """One question, command or key; raises EOFError when the user quits."""
         if not sys.stdin.isatty():
-            return input(PROMPT)
-        return self._session.prompt(PROMPT)
+            return input(f"{ARROW} ")
+        self._placeholder = placeholder
+        text, self._carry = self._carry, ""
+        self._armed = 0.0
+
+        def start() -> None:
+            self._buffer.reset(Document(text, len(text)))
+            self._changed(self._buffer)
+
+        return self._app.run(pre_run=start)
+
+    @contextmanager
+    def busy(self) -> Iterator[None]:
+        """While Heph answers: Esc stops the answer as ctrl+c does, and what the user types is
+        kept for the next prompt."""
+        if self._saved is None:
+            yield
+            return
+        fd = sys.stdin.fileno()
+        mode = termios.tcgetattr(fd)
+        tty.setcbreak(fd)  # keys arrive one by one and unechoed; ctrl+c still interrupts
+        stop = threading.Event()
+        typed: list[str] = []
+
+        def watch() -> None:
+            signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGINT})  # the main thread gets it
+            while not stop.is_set():
+                if not select.select([fd], [], [], 0.05)[0]:
+                    continue
+                data = os.read(fd, 1024)
+                if data == _ESC:  # a lone Esc: key sequences start with it but arrive whole
+                    os.kill(os.getpid(), signal.SIGINT)
+                    return
+                if not data.startswith(_ESC):
+                    typed.append(data.decode(errors="ignore"))
+
+        watcher = threading.Thread(target=watch, daemon=True)
+        watcher.start()
+        try:
+            yield
+        finally:
+            stop.set()
+            termios.tcsetattr(fd, termios.TCSADRAIN, mode)
+            watcher.join()
+            self._carry += _typed("".join(typed))
 
     def ask(self, label: str, default: str = "") -> str:
         """One plain answer, outside history and completion. The default shows dimmed until
         the user types, and Enter on an empty line takes it."""
         if not sys.stdin.isatty():
             return input(label) or default
-        hint: StyleAndTextTuples = [("class:pick.detail", default)]
+        hint: StyleAndTextTuples = [("class:hp.placeholder", default)]
         return prompt(label, placeholder=hint, style=_STYLE) or default
 
     def path(self, label: str) -> str:
