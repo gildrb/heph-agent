@@ -34,7 +34,7 @@ from prompt_toolkit.styles import Style
 from prompt_toolkit.utils import get_cwidth
 
 from heph.fuzzy import order, rank
-from heph.render import ACCENT, ARROW, DIM, SEP, WARN
+from heph.render import ACCENT, ARROW, DIM, LEVEL_COLORS, SEP, WARN
 
 # name: (arguments, what it does); the order is the menu order for an empty query
 COMMANDS: dict[str, tuple[str, str]] = {
@@ -55,6 +55,7 @@ KEYS: tuple[tuple[str, str], ...] = (
     ("ctrl+l", "pick a model"),
     ("ctrl+o", "show the passages behind the last answer"),
     ("ctrl+t", "show or hide the model's thinking"),
+    ("shift+tab", "change how much the model reasons"),
     ("alt+enter", "new line"),
     ("up, down", "earlier questions"),
 )
@@ -62,6 +63,7 @@ _ALIASES = {"quit": "exit"}
 _ROWS = 10  # menu rows shown at once
 _NAME_WIDTH = 32  # widest name column, as in oh-my-pi
 _TWICE = 1.0  # seconds within which a second ctrl+c on an empty line quits
+_NOTICE = 2.0  # seconds a notice stays in the status bar
 _ESC = b"\x1b"
 _ERASE = frozenset("\x7f\b")
 _STYLE = Style.from_dict(
@@ -75,6 +77,7 @@ _STYLE = Style.from_dict(
         "hp.model": "",
         "hp.hint": WARN,
         "hp.title": f"bold {ACCENT}",
+        **{f"hp.level.{level}": color for level, color in LEVEL_COLORS.items()},
         "completion-menu": "bg:default",
         "completion-menu.completion": "bg:default fg:default",
         "completion-menu.completion.current": f"bg:default {ACCENT}",
@@ -101,6 +104,17 @@ class Key:
     """A key that asks the session to do something, instead of a typed line."""
 
     name: Action
+
+
+@dataclass(frozen=True, slots=True)
+class Bar:
+    """The status bar: the model and its reasoning level ("" when it has none), more facts,
+    and the right-hand side."""
+
+    model: str
+    level: str
+    facts: Sequence[str]
+    right: Sequence[str]
 
 
 @dataclass(frozen=True, slots=True)
@@ -261,10 +275,12 @@ class Input:
     def __init__(
         self,
         choices: Mapping[str, Callable[[], list[str]]],
-        status: Callable[[], tuple[list[str], list[str]]],
+        status: Callable[[], Bar],
+        cycle: Callable[[], str | None],
     ) -> None:
         self._choices = choices
         self._status = status
+        self._cycle = cycle  # shift+tab: next reasoning level, or why there is none
         self._placeholder = ""
         self._carry = ""  # typed while an answer streamed, or left in the editor by a key
         self._matches: list[_Match] = []
@@ -272,6 +288,7 @@ class Input:
         self._closed = False  # Esc hid the menu, or history filled the line
         self._recalling = False
         self._armed = 0.0  # when ctrl+c last found the line empty
+        self._notice = ("", 0.0)  # a hint shown in the status bar, and until when
         self._saved = termios.tcgetattr(sys.stdin.fileno()) if sys.stdin.isatty() else None
         self._buffer, self._app = self._build(InMemoryHistory())
 
@@ -334,14 +351,23 @@ class Input:
     def _menu(self) -> StyleAndTextTuples:
         return _rows([(m.name, m.about) for m in self._matches], self._selected, _ROWS)
 
+    def _notify(self, event: KeyPressEvent, text: str, seconds: float) -> None:
+        """Shows a hint in place of the status bar for a while."""
+        self._notice = (text, time.monotonic() + seconds)
+        _ = asyncio.get_running_loop().call_later(seconds, event.app.invalidate)
+
     def _bar(self) -> StyleAndTextTuples:
-        """The status bar: what is in use on the left, where it runs on the right."""
-        if time.monotonic() - self._armed < _TWICE:
-            return [("class:hp.hint", "Press ctrl+c again to quit")]
-        left, right = self._status()
-        out: StyleAndTextTuples = [("class:hp.model", left[0])] if left else []
-        out += [("class:hp.status", SEP + part) for part in left[1:]]
-        tail = SEP.join(right)
+        """The status bar: the model and its reasoning level, then where Heph works; where the
+        model runs on the right. A notice takes its place for a moment."""
+        text, until = self._notice
+        if time.monotonic() < until:
+            return [("class:hp.hint", text)]
+        bar = self._status()
+        out: StyleAndTextTuples = [("class:hp.model", bar.model)]
+        if bar.level:
+            out.append((f"class:hp.level.{bar.level}", f" {bar.level}"))
+        out += [("class:hp.status", SEP + fact) for fact in bar.facts]
+        tail = SEP.join(bar.right)
         used = sum(get_cwidth(fragment[1]) for fragment in out)
         gap = get_app().output.get_size().columns - used - get_cwidth(tail)
         if tail and gap >= len(SEP):
@@ -388,6 +414,12 @@ class Input:
             del event
             self._move(-1)
 
+        @keys.add("s-tab", filter=~menu)
+        def _reasoning(event: KeyPressEvent) -> None:
+            hint = self._cycle()
+            if hint is not None:
+                self._notify(event, hint, _NOTICE)
+
         @keys.add("c-n", filter=menu)
         def _next(event: KeyPressEvent) -> None:
             del event
@@ -413,7 +445,7 @@ class Input:
                 event.app.exit(exception=EOFError())
                 return
             self._armed = now
-            _ = asyncio.get_running_loop().call_later(_TWICE, event.app.invalidate)
+            self._notify(event, "Press ctrl+c again to quit", _TWICE)
 
         @keys.add("c-d", filter=empty)
         def _quit(event: KeyPressEvent) -> None:

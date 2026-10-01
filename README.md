@@ -71,6 +71,7 @@ deleted files are re-indexed before the next question.
 | Esc | stops an answer; what you typed meanwhile stays in the prompt |
 | Ctrl+C | clears the line; twice on an empty line quits (Ctrl+D quits too) |
 | Ctrl+L, Ctrl+O, Ctrl+T | model picker; the passages behind the last answer; the model's thinking |
+| Shift+Tab | next reasoning level of the model, shown after its name; levels are per model |
 | Alt+Enter | new line |
 
 Each answer shows the files Heph read, how long the model thought, the answer, one line

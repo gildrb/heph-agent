@@ -40,7 +40,19 @@ OK = "#95e7a6"
 WARN = "#ffcc85"
 ERROR = "#ffc3bd"
 _CODE = "#c7dda3"
-_LINK = "#a3dcfd"
+_INFO = "#a3dcfd"
+# Reasoning levels, coloured as oh-my-pi colours its thinking levels in that theme
+LEVEL_COLORS: dict[str, str] = {
+    "off": DIM,
+    "on": OK,
+    "minimal": MUTED,
+    "low": _INFO,
+    "medium": OK,
+    "high": WARN,
+    "xhigh": ACCENT,
+    "max": f"bold {ACCENT}",
+    "ultra": f"bold {ACCENT}",
+}
 
 _THEME = Theme(
     {
@@ -49,7 +61,7 @@ _THEME = Theme(
         "markdown.code": _CODE,
         "markdown.item.bullet": ACCENT,
         "markdown.item.number": ACCENT,
-        "markdown.link": _LINK,
+        "markdown.link": _INFO,
         "markdown.link_url": DIM,
         "markdown.block_quote": MUTED,
         "markdown.hr": DIM,
@@ -414,17 +426,21 @@ class Renderer:
             self.note("No citations.")
         if result.truncated:
             self.warn("The answer was cut off at max_tokens.")
-        stats = [result.model]
+        stats = Text(result.model, style=DIM)
+        if result.reasoning is not None:
+            stats.append(f" {result.reasoning}", style=LEVEL_COLORS[result.reasoning])
+        figures: list[str] = []
         if result.usage is not None:
-            stats += [
+            figures += [
                 f"in {compact(result.usage.prompt_tokens)}",
                 f"out {compact(result.usage.completion_tokens)}",
             ]
-        stats.append(f"{result.seconds:.1f}s")
+        figures.append(f"{result.seconds:.1f}s")
         if result.usage is not None and result.seconds > 0:
             # end to end, including prefill: some servers buffer the whole stream
-            stats.append(f"{result.usage.completion_tokens / result.seconds:.0f} tok/s")
-        self._out(Text(SEP.join(stats), style=DIM))
+            figures.append(f"{result.usage.completion_tokens / result.seconds:.0f} tok/s")
+        stats.append(SEP + SEP.join(figures), style=DIM)
+        self._out(stats)
 
     def sources(self, evidence: Sequence[Evidence], citations: Sequence[Citation]) -> None:
         """Every passage the model was given for the last answer, in full."""

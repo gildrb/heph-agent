@@ -39,7 +39,7 @@ refresh fails, run `/login codex` again.
 
 | File | Holds | Written by |
 | --- | --- | --- |
-| `~/.config/heph/logins.toml` | logins (provider, URL, key file) and the active login and model | `/model`, `/login`, `/logout` |
+| `~/.config/heph/logins.toml` | logins (provider, URL, key file), the active login and model, and the reasoning level | `/model`, `/login`, `/logout`, Shift+Tab |
 | `~/.config/heph/keys/<login>` | an API key you pasted, or Codex tokens | `/model <url>`, `/login`; mode 0600, folder 0700 |
 
 `$XDG_CONFIG_HOME/heph/` replaces `~/.config/heph/` when set. A login's key comes from, in
@@ -53,6 +53,25 @@ provider = "local"
 base_url = "http://127.0.0.1:18020/v1"
 key_file = "/path/to/api-key"
 ```
+
+### Reasoning levels
+
+Shift+Tab moves to the next level of the model in use; the status bar shows it after the
+model name, and each answer's stats line shows the level it used. `logins.toml` keeps it as
+`reasoning = "medium"` and every model gets the nearest level it has (an effort with no
+equal falls to the next one down, else the lowest). Without one, each model's default.
+
+| Provider | Where the levels come from | Sent as |
+| --- | --- | --- |
+| OpenRouter | its `/models` list (`reasoning.supported_efforts`, `mandatory`, `default_effort`) | `reasoning: {effort}`; off: `{enabled: false}` |
+| OpenAI API | Heph's table of OpenAI's model pages: o-series and gpt-5 low to high, gpt-5.1+ add off (`none`), 5.2+ xhigh, 5.6 and GPT-6 max | `reasoning_effort`; reasoning models get `max_completion_tokens` and no temperature |
+| ChatGPT (Codex) | Heph's table of openai/codex `models.json`: low to max or ultra, per model | `reasoning: {effort, summary: "auto"}` |
+| DeepSeek | V4 and flash: off, low, high, max | `thinking: {type}` + `reasoning_effort` |
+| Z.AI | GLM-5.3: low, high, max; 5.2: off, high, max; 4.5 to 5.1: off, on | `thinking: {type}` (+ `reasoning_effort`) |
+| Local server | by model name: Qwen 3.8+ off, low, medium, xhigh; other Qwen3 off, on; gpt-oss low to high; others none | Qwen: `chat_template_kwargs` (`enable_thinking`, `reasoning_effort`); gpt-oss: `reasoning_effort` |
+
+A local server cannot report what its model takes and some reject unknown fields, so Heph
+sends reasoning fields only to the model families above.
 
 ## Settings
 

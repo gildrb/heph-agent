@@ -10,6 +10,7 @@ from heph import HephError, core
 from heph.config import Config
 from heph.index import Index
 from heph.llm import Finish, Message, ModelClient, Usage
+from heph.reasoning import Dial, Setting
 
 type Status = Literal["verified", "failed", "unquoted", "badid"]
 _STATUS: dict[core.Verdict, Status] = {
@@ -61,6 +62,7 @@ class Result:
     question: str
     answer: str
     model: str
+    reasoning: str | None  # the level asked of the model; None when it has no levels
     evidence: tuple[Evidence, ...]
     citations: tuple[Citation, ...]
     usage: Usage | None
@@ -84,6 +86,7 @@ class Result:
                 {"id": f"E{e.eid}", "source": e.source, "page": e.page, "text": e.text}
                 for e in self.evidence
             ],
+            "reasoning": self.reasoning,
             "truncated": self.truncated,
             "usage": None
             if self.usage is None
@@ -204,12 +207,20 @@ class Engine:
     model: str
     config: Config
     index: Index
+    dial: Dial | None  # the model's reasoning levels; None when it has none to choose
+    wanted: str | None  # the reasoning level the user chose; None: the model's default
+
+    @property
+    def level(self) -> str | None:
+        """The reasoning level requests use: the wanted one fitted to this model."""
+        return None if self.dial is None else self.dial.clamp(self.wanted)
 
 
 def ask(
     engine: Engine, history: Sequence[tuple[str, str]], question: str, events: Events
 ) -> Result:
-    """Runs one model call and verifies citations block by block as they complete."""
+    """Runs one model call at the engine's reasoning level and verifies citations block by
+    block as they complete."""
     started = time.monotonic()
     config = engine.config
     evidence = retrieve(engine.index, question, config.evidence_tokens)
@@ -226,7 +237,11 @@ def ask(
             citations.extend(found)
             events.block(blocks.text[start:end], start, found)
 
-    stream = engine.client.stream(engine.model, prompt, config.max_tokens, config.temperature)
+    level = engine.level
+    setting = None if engine.dial is None or level is None else Setting(engine.dial, level)
+    stream = engine.client.stream(
+        engine.model, prompt, config.max_tokens, config.temperature, setting
+    )
     for item in stream:
         if isinstance(item, Usage):
             usage = item
@@ -251,6 +266,7 @@ def ask(
         question=question,
         answer=blocks.text,
         model=engine.model,
+        reasoning=level,
         evidence=evidence,
         citations=tuple(citations),
         usage=usage,

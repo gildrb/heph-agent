@@ -19,24 +19,21 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 
 import certifi
 
-from heph import HephError
+from heph import HephError, reasoning
 from heph.llm import Delta, Finish, Message, Usage
+from heph.reasoning import Dial, Setting
 
+# The models openai/codex lists for ChatGPT logins, in its order (models.json at b1e72963,
+# 2026-09-29); their reasoning levels are in heph.reasoning.
 MODELS: tuple[str, ...] = (
+    "gpt-6.1-sol",
+    "gpt-6-astra",
+    "gpt-6-sol",
+    "gpt-6-luna",
     "gpt-5.6-sol",
     "gpt-5.6-terra",
     "gpt-5.6-luna",
     "gpt-5.5",
-    "gpt-5.4",
-    "gpt-5.4-mini",
-    "gpt-5.4-pro",
-    "gpt-5.4-nano",
-    "gpt-5.3-codex",
-    "gpt-5.2-codex",
-    "gpt-5.2",
-    "gpt-5.1-codex-max",
-    "gpt-5.1-codex-mini",
-    "gpt-5.3-codex-spark",
 )
 
 _CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
@@ -291,6 +288,9 @@ class CodexClient:
     def models(self) -> list[str]:
         return list(MODELS)
 
+    def dial(self, model: str) -> Dial | None:
+        return reasoning.dial("codex", model)
+
     def _auth(self) -> _Tokens:
         auth = _load(self.tokens)
         if auth.expires - 60 > time.time():
@@ -308,7 +308,12 @@ class CodexClient:
         return auth
 
     def stream(
-        self, model: str, messages: list[Message], max_tokens: int, temperature: float
+        self,
+        model: str,
+        messages: list[Message],
+        max_tokens: int,
+        temperature: float,
+        setting: Setting | None,
     ) -> Iterator[Delta | Usage | Finish]:
         """Yields reasoning/text deltas, the finish reason and usage.
 
@@ -332,7 +337,9 @@ class CodexClient:
             "input": inputs,
             "store": False,
             "stream": True,
-            "reasoning": {"summary": "auto"},
+            "reasoning": reasoning.fields(setting.dial, setting.level)["reasoning"]
+            if setting is not None
+            else {"summary": "auto"},
         }
         auth = self._auth()
         headers = {

@@ -28,7 +28,8 @@ answer ─ parse citations ─ core: verify ─ rendered answer + sources + stat
 | `extract.py` | text from PDF (per page), DOCX, PPTX, XLSX, ODT, ODS and UTF-8 text |
 | `core.py` | `heph-core` subprocess client (protocol v1 below) |
 | `index.py` | per-file index caches, tokenizer, postings, retrieval |
-| `llm.py` | stdlib HTTP client: streaming chat completions, `GET /models` |
+| `llm.py` | stdlib HTTP client: streaming chat completions, `GET /models`, per-provider request shape |
+| `reasoning.py` | reasoning levels: each model's ladder (OpenRouter's list or built-in rules) and the request fields per provider |
 | `answer.py` | one turn: retrieve, prompt, stream, verify citations |
 | `render.py` | terminal output: shimmering working line, streamed Markdown, checked citations, sources, stats |
 | `session.py` | chat persistence in `.harness/chats/` |

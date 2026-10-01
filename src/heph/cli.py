@@ -102,6 +102,8 @@ def _run(args: Args, out: Renderer, err: Renderer) -> None:
                 where = item.base_url or title
                 using = f"{SEP}(active, {model or 'first listed model'})" if item == login else ""
                 out.plain(f"  {item.name}{SEP}{where}{using}")
+            level = saved.reasoning or "each model's default"
+            out.plain(f"reasoning: {level} (shift+tab in heph; fitted to each model)")
         case _:
             repl.run(args.armory, out)
 

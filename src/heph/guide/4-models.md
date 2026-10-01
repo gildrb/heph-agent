@@ -12,6 +12,15 @@ Type `/model` or press Ctrl+L. It lists every model of every login; pick one wit
 arrow keys and Enter, or type to filter. `/model qwen` switches straight to the closest
 match. Your choice is saved and used next time.
 
+## How do I change how much the model thinks?
+
+Press Shift+Tab. Each press moves to the model's next reasoning level, shown after the
+model name under the prompt: off answers fastest, higher levels think longer before
+answering. Heph keeps your choice for next time and fits it to each model: a model without
+that level gets the nearest one below. The levels depend on the model, for example off,
+low, medium and xhigh for Qwen 3.8, or low up to max for OpenAI's GPT-6 models. A model
+with no levels to choose says so when you press Shift+Tab.
+
 ## How do I use my own local server?
 
 Type `/model` and pick "add a local server", then type its URL, for example

@@ -11,7 +11,8 @@ from urllib.parse import urlsplit
 
 import certifi
 
-from heph import HephError
+from heph import HephError, reasoning
+from heph.reasoning import Dial, Setting
 
 _CONNECT_TIMEOUT = 10.0
 _READ_TIMEOUT = 300.0
@@ -44,12 +45,20 @@ type Message = dict[str, str]
 
 
 class ModelClient(Protocol):
-    """What answering needs from a login: its models and one streamed chat completion."""
+    """What answering needs from a login: its models, a model's reasoning levels, and one
+    streamed chat completion."""
 
     def models(self) -> list[str]: ...
 
+    def dial(self, model: str) -> Dial | None: ...
+
     def stream(
-        self, model: str, messages: list[Message], max_tokens: int, temperature: float
+        self,
+        model: str,
+        messages: list[Message],
+        max_tokens: int,
+        temperature: float,
+        setting: Setting | None,
     ) -> Iterator[Delta | Usage | Finish]: ...
 
 
@@ -69,6 +78,7 @@ def _at(value: object, *path: str | int) -> object:
 class Client:
     base_url: str
     api_key: str
+    provider: str  # a key of logins.PROVIDERS: decides the request's dialect
 
     def _open(self, method: str, path: str, body: bytes | None) -> http.client.HTTPResponse:
         url = f"{self.base_url}{path}"
@@ -105,28 +115,54 @@ class Client:
             raise HephError(message)
         return response
 
-    def models(self) -> list[str]:
+    def _listing(self) -> list[object]:
         with self._open("GET", "/models", None) as response:
             try:
                 data: object = json.loads(response.read())
             except (http.client.HTTPException, OSError, ValueError) as exc:
                 raise HephError(f"Bad /models response from {self.base_url}: {exc}") from exc
         entries = _at(data, "data")
-        ids = [_at(e, "id") for e in entries] if isinstance(entries, list) else []
+        return [*entries] if isinstance(entries, list) else []
+
+    def models(self) -> list[str]:
+        ids = [_at(entry, "id") for entry in self._listing()]
         return [i for i in ids if isinstance(i, str)]
 
+    def dial(self, model: str) -> Dial | None:
+        """The model's reasoning levels: OpenRouter lists them; for the rest, Heph's rules."""
+        if self.provider != "openrouter":
+            return reasoning.dial(self.provider, model)
+        for entry in self._listing():
+            match entry:
+                case {"id": str(name), **fields} if name == model:
+                    return reasoning.advertised(fields)
+                case _:
+                    pass
+        return None
+
     def stream(
-        self, model: str, messages: list[Message], max_tokens: int, temperature: float
+        self,
+        model: str,
+        messages: list[Message],
+        max_tokens: int,
+        temperature: float,
+        setting: Setting | None,
     ) -> Iterator[Delta | Usage | Finish]:
         """Yields reasoning/content deltas, the finish reason, and usage when reported."""
-        body = {
+        openai = self.provider == "openai"
+        body: dict[str, object] = {
             "model": model,
             "messages": messages,
             "stream": True,
             "stream_options": {"include_usage": True},
-            "max_tokens": max_tokens,
-            "temperature": temperature,
+            # OpenAI deprecated max_tokens and its reasoning models refuse it
+            "max_completion_tokens" if openai else "max_tokens": max_tokens,
         }
+        # OpenAI's reasoning models take no temperature unless reasoning is off
+        if not openai or setting is None or setting.level == "off":
+            body["temperature"] = temperature
+        if setting is not None:
+            body |= reasoning.fields(setting.dial, setting.level)
         with self._open("POST", "/chat/completions", json.dumps(body).encode()) as response:
             try:
                 yield from _events(response)

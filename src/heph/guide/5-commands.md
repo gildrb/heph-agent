@@ -22,6 +22,7 @@ In the `/` menu, Up and Down move, Tab completes, Enter runs and Esc closes it.
 - Ctrl+L opens the model picker.
 - Ctrl+O shows the passages behind the last answer, in full.
 - Ctrl+T shows or hides the model's thinking after each answer.
+- Shift+Tab changes how much the model reasons: its reasoning level, shown after the model.
 - Alt+Enter starts a new line. Up and Down bring back earlier questions.
 
 ## Is my data private?

@@ -30,14 +30,15 @@ def index_armory(root: Path, renderer: Renderer, *, quiet: bool) -> Index:
 
 
 def engine_for(config: Config, index: Index) -> Engine:
-    login, model = logins.active(logins.load())
+    saved = logins.load()
+    login, model = logins.active(saved)
     client = logins.client(login)
     if not model:
         models = client.models()
         if not models:
             raise HephError(f"{login.name} lists no models; pick one with /model")
         model = models[0]
-    return Engine(client, model, config, index)
+    return Engine(client, model, config, index, client.dial(model), saved.reasoning or None)
 
 
 def turn(
@@ -86,7 +87,7 @@ class Repl:
             "model": self.choices,
             "logout": lambda: [item.name for item in self.saved.items],
         }
-        self.input = prompt.Input(choices, self.status)
+        self.input = prompt.Input(choices, self.status, self.cycle)
         self.open = self._open(root, Chat.new(root), quiet=True)
         self.input.history(_history(root))
         self.out.title(f"heph {root.name}")
@@ -124,13 +125,34 @@ class Repl:
         self.out.note(f"Opened {root.name}.")
         self.connect_model()
 
-    def status(self) -> tuple[list[str], list[str]]:
-        """The bar under the prompt: model, armory and files; the login on the right."""
+    def wanted(self) -> str | None:
+        """The reasoning level the user chose (shift+tab); None: each model's default."""
+        return self.saved.reasoning or None
+
+    def status(self) -> prompt.Bar:
+        """The bar under the prompt: model and reasoning level, armory and files; the login on
+        the right."""
         login, model = logins.active(self.saved)
         engine = self.open.engine
-        using = engine.model if engine else model
+        using = model if engine is None else engine.model
+        dial = None if engine is None else engine.dial
+        level = None if dial is None else dial.clamp(self.wanted())
         files = _plural(self.open.files, "file")
-        return [using or login.name, self.open.root.name, files], [login.name] if using else []
+        right = [login.name] if using else []
+        return prompt.Bar(using or login.name, level or "", [self.open.root.name, files], right)
+
+    def cycle(self) -> str | None:
+        """shift+tab: the model's next reasoning level, kept for next time. Says why not when
+        there is no model yet or it has no levels."""
+        engine = self.open.engine
+        if engine is None:
+            return "No model yet: /model picks one"
+        if engine.dial is None:
+            return f"{engine.model} has no reasoning levels to choose"
+        level = engine.dial.after(engine.dial.clamp(self.wanted()))
+        self.saved = replace(self.saved, reasoning=level)
+        logins.save(self.saved)
+        return None
 
     def armory(self, arg: str) -> None:
         if arg:
@@ -230,6 +252,7 @@ class Repl:
         self.open.engine = None
         known = self.catalog.get(name, [])
         self.out.note(f"Using {model or (known[0] if known else 'the first model')} on {name}.")
+        self.connect_model()
 
     def model(self, arg: str) -> None:
         if arg:
@@ -383,7 +406,8 @@ class Repl:
         if current.engine is None:
             current.engine = engine_for(self.config, current.index)
         with self.input.busy():
-            current.last = turn(current.engine, current.chat, line, self.out, esc=True)
+            engine = replace(current.engine, wanted=self.wanted())
+            current.last = turn(engine, current.chat, line, self.out, esc=True)
 
     def command(self, line: str) -> bool:
         """Handles a slash command, forgiving typos in its name; returns False to quit."""

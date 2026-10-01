@@ -66,10 +66,11 @@ In a session, type a question and press Enter. Heph echoes it, then shows:
 | `Thought for 6.2s` | time from the request to the first word of the answer |
 | the answer | citations colored once checked: green verified, yellow no quote, red not found |
 | `✓ E1  a.md   2 quotes verified` | one line per cited passage |
-| `qwen3.8-27b   in 2.3K   out 1.7K   9.9s   174 tok/s` | model, tokens, time, speed |
+| `qwen3.8-27b low   in 2.3K   out 1.7K   9.9s   174 tok/s` | model, reasoning level, tokens, time, speed |
 
-Under the prompt, the status bar shows the model, the armory and its file count, and the
-login on the right. New, changed and deleted files are re-indexed before the next question.
+Under the prompt, the status bar shows the model and its reasoning level, the armory and its
+file count, and the login on the right. New, changed and deleted files are re-indexed before
+the next question.
 
 Outside an armory, `heph` opens the Heph guide (`~/.armories/heph-guide`): pages about
 Heph itself, refreshed from the installed version. Ask it how Heph works.
@@ -86,6 +87,7 @@ filter, arrows move, Enter picks, Esc skips. In the `/` menu, Tab completes and 
 | Ctrl+L | pick a model |
 | Ctrl+O | show the passages behind the last answer, in full |
 | Ctrl+T | show or hide the model's thinking after each answer |
+| Shift+Tab | next reasoning level of the model in use (see [Configuration](configuration.md#reasoning-levels)) |
 | Alt+Enter | new line |
 | Up, Down | earlier questions |
 

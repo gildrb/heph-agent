@@ -1,6 +1,7 @@
 """Logins: local OpenAI-compatible servers, API-key providers and the ChatGPT (Codex) subscription.
 
-`logins.toml` (written by /model and /login) lists them and names the active login and model.
+`logins.toml` (written by /model and /login) lists them and names the active login, model and
+reasoning level (shift+tab).
 Keys pasted into /login are saved as `keys/<login>` (0600). HEPH_BASE_URL, HEPH_API_KEY and
 HEPH_MODEL override everything, for scripts.
 """
@@ -12,7 +13,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from heph import HephError, codex
+from heph import HephError, codex, reasoning
 from heph.config import config_dir, read_toml
 from heph.llm import Client, ModelClient
 
@@ -53,6 +54,7 @@ class Logins:
     items: tuple[Login, ...]
     login: str  # active login name; empty: the default local server
     model: str  # active model; empty: the first one the login lists
+    reasoning: str = ""  # chosen level, fitted to each model's; empty: each model's default
 
     def get(self, name: str) -> Login | None:
         return next((item for item in self.items if item.name == name), None)
@@ -100,12 +102,16 @@ def _login(name: str, raw: object, path: Path) -> Login:
 
 def load() -> Logins:
     path = config_dir() / "logins.toml"
-    data = read_toml(path, frozenset({"login", "model", "logins"}))
+    data = read_toml(path, frozenset({"login", "model", "reasoning", "logins"}))
     login, model, table = data.get("login", ""), data.get("model", ""), data.get("logins", {})
+    level = data.get("reasoning", "")
     if not isinstance(login, str) or not isinstance(model, str) or not isinstance(table, dict):
         raise HephError(f"{path} must hold login and model strings and a [logins] table")
+    if not isinstance(level, str) or level not in {"", reasoning.ON, *reasoning.ORDER}:
+        known = ", ".join((*reasoning.ORDER, reasoning.ON))
+        raise HephError(f"{path}: reasoning must be one of {known}, not {level!r}")
     items = tuple(_login(str(name), raw, path) for name, raw in table.items())
-    return Logins(path, items, login, model)
+    return Logins(path, items, login, model, level)
 
 
 def _quote(value: str) -> str:
@@ -114,6 +120,8 @@ def _quote(value: str) -> str:
 
 def save(logins: Logins) -> None:
     lines = [f"login = {_quote(logins.login)}", f"model = {_quote(logins.model)}"]
+    if logins.reasoning:
+        lines.append(f"reasoning = {_quote(logins.reasoning)}")
     for item in logins.items:
         lines += ["", f"[logins.{_quote(item.name)}]", f"provider = {_quote(item.provider)}"]
         if item.base_url:
@@ -168,4 +176,4 @@ def api_key(login: Login) -> str:
 def client(login: Login) -> ModelClient:
     if login.provider == CODEX:
         return codex.CodexClient(key_path(login.name))
-    return Client(login.base_url, api_key(login))
+    return Client(login.base_url, api_key(login), login.provider)
